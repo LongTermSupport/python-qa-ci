@@ -105,6 +105,7 @@ extend-exclude = ["gen"]
 ignore = ["E741"]
 
 [tool.ruff.lint]
+select = ["E501", "S101"]
 ignore = ["E501"]
 extend-ignore = ["B008"]
 
@@ -137,8 +138,10 @@ follow_imports = "skip"
         ("mypy", ("follow_imports",)),
     }
     assert all(site.path == "pyproject.toml" for site in config_sites(tmp_path))
-    line_of_e501 = next(s.line for s in config_sites(tmp_path) if s.codes == ("E501",))
-    assert line_of_e501 == 7
+    lines = {site.codes[0]: site.line for site in config_sites(tmp_path) if site.tool == "ruff"}
+    assert lines["E501"] == 8
+    assert lines["S101"] == 12
+    assert lines["B008"] == 9
 
 
 def test_ruff_toml_and_mypy_ini_routes(tmp_path: Path) -> None:
