@@ -1,0 +1,35 @@
+# python-qa-ci runs its own pipeline on itself: the bundled Pylint defences, the suppression
+# scan, the record and the documentation check all run on this source exactly as they run in a
+# consuming project. CI is set, so the formatter checks rather than fixes.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: python-qa run
+        run: uv run python-qa run
