@@ -3,6 +3,8 @@
 # silently, a crash, an error hidden, or code that cannot be changed safely. Style is left to the
 # formatter, and rules that conflict with it are not selected.
 
+line-length = 100
+
 [lint]
 select = [
     "E4",    # import placement

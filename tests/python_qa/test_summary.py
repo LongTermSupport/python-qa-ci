@@ -1,0 +1,60 @@
+"""Tests for the agent summary region: generation, delivery and the staleness check."""
+
+from datetime import date
+from pathlib import Path
+
+from python_qa.config import load_config
+from python_qa.defences import Defence
+from python_qa.record import RecordEntry
+from python_qa.summary import BEGIN, END, check_summary, place, render, write_summary
+
+DEFENCES = [
+    Defence("pyqaci.tests", "python-qa", "bundled", "The test suite passes."),
+    Defence("pyqaci-broad-suppress", "pylint", "bundled", "Name the exceptions."),
+    Defence("proj-no-eval", "pylint", "project", "Do not call eval."),
+    Defence("F401", "ruff", "ruff", "unused-import"),
+    Defence("arg-type", "mypy", "mypy", "Check argument types in calls"),
+]
+ENTRY = RecordEntry(1, "ruff::E501", "a.py", "x" * 50, "alice", date(2026, 1, 1), date(2026, 2, 1))
+
+
+def test_render_lists_bespoke_defences_and_counts_the_catalogues(tmp_path: Path) -> None:
+    region = render(DEFENCES, [ENTRY], load_config(tmp_path))
+    lines = region.splitlines()
+    assert lines[0] == BEGIN
+    assert lines[-1] == END
+    assert "- `pyqaci-broad-suppress` (Pylint, bundled): Name the exceptions. Docs: " in region
+    assert "`python-qa rule-doc pyqaci-broad-suppress`" in region
+    assert "- `proj-no-eval` (Pylint, project): Do not call eval." in region
+    assert "- `pyqaci.tests` (python-qa): The test suite passes." in region
+    assert "1 Ruff rules and 1 mypy error codes also block" in region
+    assert "1 exception in `qa/record.toml`" in region
+    assert "F401" not in region
+
+
+def test_place_replaces_an_existing_region_and_keeps_the_rest() -> None:
+    old = f"# Agents\n\nIntro.\n\n{BEGIN}\nold\n{END}\n\nAfter.\n"
+    assert (
+        place(old, f"{BEGIN}\nnew\n{END}")
+        == f"# Agents\n\nIntro.\n\n{BEGIN}\nnew\n{END}\n\nAfter.\n"
+    )
+
+
+def test_place_appends_when_there_is_no_region() -> None:
+    assert place("# Agents\n", f"{BEGIN}\nnew\n{END}") == f"# Agents\n\n{BEGIN}\nnew\n{END}\n"
+    assert place("", f"{BEGIN}\nnew\n{END}") == f"{BEGIN}\nnew\n{END}\n"
+
+
+def test_write_then_check_is_clean_and_drift_is_reported(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.python-qa.summary]\nfile = "AGENTS.md"\n', encoding="utf-8"
+    )
+    config = load_config(tmp_path)
+    assert [f.rule for f in check_summary(config, DEFENCES, [])] == ["pyqaci.summary.stale"]
+    write_summary(config, DEFENCES, [])
+    assert check_summary(config, DEFENCES, []) == []
+    assert [f.rule for f in check_summary(config, DEFENCES[:1], [])] == ["pyqaci.summary.stale"]
+
+
+def test_no_summary_file_configured_is_nothing_to_check(tmp_path: Path) -> None:
+    assert check_summary(load_config(tmp_path), DEFENCES, []) == []

@@ -10,3 +10,10 @@ enable_error_code = [
     "truthy-bool",
     "unused-awaitable",
 ]
+
+# astroid, which every Pylint plugin is written against, is annotated but ships no py.typed
+# marker. Following it type-checks plugin code against those annotations instead of skipping
+# the import.
+[[tool.mypy.overrides]]
+module = ["astroid", "astroid.*"]
+follow_untyped_imports = true

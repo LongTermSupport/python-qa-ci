@@ -81,7 +81,9 @@ def test_pylint_args_load_bundled_and_project_plugins(tmp_path: Path) -> None:
 
 
 def test_pylint_messages_name_their_origin(tmp_path: Path) -> None:
-    write(tmp_path, "pyproject.toml", '[tool.python-qa]\npylint_enable = ["unspecified-encoding"]\n')
+    write(
+        tmp_path, "pyproject.toml", '[tool.python-qa]\npylint_enable = ["unspecified-encoding"]\n'
+    )
     messages = {m.symbol: m for m in pylint_messages(load_config(tmp_path))}
     assert messages["pyqaci-sensitive-repr"].origin == "bundled"
     assert messages["pyqaci-sensitive-repr"].msgid == "W9701"
@@ -140,7 +142,17 @@ def test_lane_commands(tmp_path: Path) -> None:
     python = sys.executable
     commands = lane_commands(config, paths=None, no_fix=True)
     assert commands["fmt"] == [
-        [python, "-m", "ruff", "format", "--check", "--diff", *ruff_config_args(tmp_path), "src", "tests"]
+        [
+            python,
+            "-m",
+            "ruff",
+            "format",
+            "--check",
+            "--diff",
+            *ruff_config_args(tmp_path),
+            "src",
+            "tests",
+        ]
     ]
     assert commands["ruff"][0][:5] == [python, "-m", "ruff", "check", "--no-fix"]
     assert commands["mypy"] == [[python, "-m", "mypy", *mypy_config_args(tmp_path), "src", "tests"]]
@@ -149,7 +161,9 @@ def test_lane_commands(tmp_path: Path) -> None:
         [python, "-m", "coverage", "report", "--fail-under=80.0"],
     ]
     fixing = lane_commands(config, paths=("src/a.py",), no_fix=False)
-    assert fixing["fmt"] == [[python, "-m", "ruff", "format", *ruff_config_args(tmp_path), "src/a.py"]]
+    assert fixing["fmt"] == [
+        [python, "-m", "ruff", "format", *ruff_config_args(tmp_path), "src/a.py"]
+    ]
 
 
 def test_test_lane_without_coverage(tmp_path: Path) -> None:

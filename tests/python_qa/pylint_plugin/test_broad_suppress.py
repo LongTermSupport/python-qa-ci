@@ -25,7 +25,9 @@ class TestBroadSuppress(CheckerTestCase):
             self.walk(astroid.parse(code))
 
     def test_exception(self) -> None:
-        self.fires("import contextlib\nwith contextlib.suppress(Exception):\n    pass\n", "Exception")
+        self.fires(
+            "import contextlib\nwith contextlib.suppress(Exception):\n    pass\n", "Exception"
+        )
 
     def test_base_exception_through_an_alias(self) -> None:
         self.fires(

@@ -60,7 +60,8 @@ def active_defences(config: Config) -> list[Defence]:
     defences = [
         Defence(identifier, "python-qa", "bundled", summary)
         for identifier, (lane, summary) in BUILTIN.items()
-        if config.tools[lane] and (lane != "summary" or config.summary_file)
+        if config.tools[lane]
+        and (lane != "summary" or config.summary_file)
         and (lane != "coverage" or config.tools["test"])
     ]
     if config.tools["pylint"]:

@@ -13,10 +13,11 @@ import io
 import re
 import subprocess
 import tokenize
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import tomllib
 
 from python_qa.config import ConfigError, read_pyproject
 from python_qa.finding import Finding
@@ -241,9 +242,11 @@ def _mypy_sites(display: str, section: dict[str, Any], text: str) -> list[Site]:
         for code in codes
     )
     module = str(section.get("module", "every module"))
-    for key in ("ignore_errors", "ignore_missing_imports"):
-        if section.get(key) is True:
-            found.append(Site(display, _line(text, key), "mypy", (key,), module))
+    found.extend(
+        Site(display, _line(text, key), "mypy", (key,), module)
+        for key in ("ignore_errors", "ignore_missing_imports")
+        if section.get(key) is True
+    )
     if section.get("exclude"):
         found.append(Site(display, _line(text, "exclude"), "mypy", ("exclude",), "exclude"))
     if section.get("follow_imports") in {"skip", "silent"}:

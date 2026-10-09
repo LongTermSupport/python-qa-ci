@@ -122,11 +122,7 @@ def pylint_messages(config: Config) -> list[PylintMessage]:
     linter.load_default_plugins()
     with _project_importable(config.root):
         for module in plugins:
-            try:
-                importlib.import_module(module)
-            except ImportError as error:
-                msg = f"pylint plugin {module} cannot be imported: {error}"
-                raise ValueError(msg) from error
+            _import_plugin(module)
         linter.load_plugin_modules(list(plugins))
     wanted = set(config.pylint_enable)
     messages: list[PylintMessage] = []
@@ -150,6 +146,15 @@ def pylint_messages(config: Config) -> list[PylintMessage]:
         msg = f"pylint_enable names no Pylint message: {', '.join(sorted(wanted))}"
         raise ValueError(msg)
     return sorted(messages, key=lambda message: message.symbol)
+
+
+def _import_plugin(module: str) -> None:
+    """Import a plugin so a missing one fails loudly; Pylint records the error and carries on."""
+    try:
+        importlib.import_module(module)
+    except ImportError as error:
+        msg = f"pylint plugin {module} cannot be imported: {error}"
+        raise ValueError(msg) from error
 
 
 def _origin(module: str, project_plugins: tuple[str, ...]) -> str:

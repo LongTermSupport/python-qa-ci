@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
 
 from astroid import nodes
 from astroid.exceptions import InferenceError
 from astroid.util import UninferableBase
 from pylint.checkers import BaseChecker
+
+if TYPE_CHECKING:
+    from pylint.typing import MessageDefinitionTuple
 
 MESSAGE = "pyqaci-sensitive-repr"
 DEFAULT_NAMES = (
@@ -44,21 +48,24 @@ def is_sensitive_name(name: str, patterns: tuple[str, ...] | list[str]) -> bool:
     )
 
 
+MESSAGES: dict[str, MessageDefinitionTuple] = {
+    "W9701": (
+        "%s.%s is printed by the generated __repr__ of a %s; exclude it with repr=False or "
+        "hold it in a redacting type (python-qa rule-doc pyqaci-sensitive-repr)",
+        MESSAGE,
+        "Keep credential-named fields out of a generated __repr__. A dataclass or pydantic "
+        "model prints every field verbatim, so a secret held in one reaches logs, tracebacks "
+        "and test output. Declare the field with repr=False, hold it in a redacting type such "
+        "as pydantic.SecretStr, or write __repr__ by hand.",
+    )
+}
+
+
 class SensitiveReprChecker(BaseChecker):
     """Report credential-named fields that a dataclass or pydantic model prints in its repr."""
 
     name = "pyqaci-sensitive-repr"
-    msgs = {
-        "W9701": (
-            "%s.%s is printed by the generated __repr__ of a %s; exclude it with repr=False or "
-            "hold it in a redacting type (python-qa rule-doc pyqaci-sensitive-repr)",
-            MESSAGE,
-            "A field whose name marks it as a credential is printed verbatim by the __repr__ a "
-            "dataclass or pydantic model generates, so the secret reaches logs, tracebacks and "
-            "test output. Declare the field with repr=False, hold it in a redacting type such as "
-            "pydantic.SecretStr, or write __repr__ by hand.",
-        )
-    }
+    msgs = MESSAGES
     options = (
         (
             "pyqaci-sensitive-names",

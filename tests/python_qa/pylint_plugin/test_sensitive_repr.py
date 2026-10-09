@@ -4,9 +4,11 @@ import astroid
 import pytest
 from pylint.testutils import CheckerTestCase, MessageTest, set_config
 
-from python_qa.pylint_plugin.sensitive_repr import SensitiveReprChecker, is_sensitive_name
-
-DEFAULT_NAMES = SensitiveReprChecker.options[0][1]["default"]
+from python_qa.pylint_plugin.sensitive_repr import (
+    DEFAULT_NAMES,
+    SensitiveReprChecker,
+    is_sensitive_name,
+)
 
 
 @pytest.mark.parametrize(
@@ -80,12 +82,7 @@ class TestSensitiveRepr(CheckerTestCase):
         self.fires(code, "api_key", "Client", "dataclass")
 
     def test_pydantic_model_field(self) -> None:
-        code = (
-            "class BaseModel:\n"
-            "    pass\n"
-            "class Settings(BaseModel):\n"
-            "    token: str\n"
-        )
+        code = "class BaseModel:\n    pass\nclass Settings(BaseModel):\n    token: str\n"
         module = astroid.parse(code, module_name="pydantic.main")
         node = next(module.nodes_of_class(astroid.nodes.AnnAssign))
         with self.assertAddsMessages(
@@ -156,8 +153,5 @@ class TestSensitiveRepr(CheckerTestCase):
     @set_config(pyqaci_sensitive_names=("pin",))
     def test_configured_names_replace_the_defaults(self) -> None:
         self.silent(
-            "from dataclasses import dataclass\n"
-            "@dataclass\n"
-            "class Login:\n"
-            "    password: str\n"
+            "from dataclasses import dataclass\n@dataclass\nclass Login:\n    password: str\n"
         )

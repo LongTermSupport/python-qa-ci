@@ -46,7 +46,9 @@ def test_valid_entry_loads(tmp_path: Path) -> None:
     entries, findings = load(tmp_path, entry_text())
     assert findings == []
     assert entries == [
-        RecordEntry(1, "ruff::S603", "src/run.py", GOOD, "alice", date(2026, 1, 15), date(2026, 4, 15))
+        RecordEntry(
+            1, "ruff::S603", "src/run.py", GOOD, "alice", date(2026, 1, 15), date(2026, 4, 15)
+        )
     ]
 
 
@@ -111,7 +113,9 @@ def make(rule: str, path: str, review_by: date = date(2026, 4, 15)) -> RecordEnt
 def test_budget_total_and_per_rule() -> None:
     entries = [make("ruff::S603", f"src/{n}.py") for n in range(3)]
     policy = RecordPolicy(max_total=2, max_per_rule=1)
-    rendered = [finding.render() for finding in check_record(entries, policy, "qa/record.toml", TODAY)]
+    rendered = [
+        finding.render() for finding in check_record(entries, policy, "qa/record.toml", TODAY)
+    ]
     assert any("pyqaci.record.budget" in line and "3 exceptions" in line for line in rendered)
     assert any("ruff::S603" in line and "max_per_rule" in line for line in rendered)
 
