@@ -166,6 +166,23 @@ def test_lane_commands(tmp_path: Path) -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("name", "text"),
+    [
+        ("pyproject.toml", "[tool.coverage.report]\nfail_under = 95\n"),
+        (".coveragerc", "[report]\nfail_under = 95\n"),
+        ("setup.cfg", "[coverage:report]\nfail_under = 95\n"),
+        ("tox.ini", "[coverage:report]\nfail_under = 95\n"),
+    ],
+)
+def test_projects_own_coverage_floor_is_not_overridden(
+    tmp_path: Path, name: str, text: str
+) -> None:
+    write(tmp_path, name, text)
+    commands = lane_commands(load_config(tmp_path), paths=None, no_fix=True)
+    assert commands["test"][1] == [sys.executable, "-m", "coverage", "report"]
+
+
 def test_black_formatter(tmp_path: Path) -> None:
     write(tmp_path, "pyproject.toml", '[tool.python-qa]\nformatter = "black"\npaths = ["pkg"]\n')
     config = load_config(tmp_path)

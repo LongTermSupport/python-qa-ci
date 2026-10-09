@@ -204,7 +204,9 @@ fail_under = 80
 `setup.cfg`) keeps it. Otherwise python-qa passes its bundled one: Ruff with a hazard-focused
 rule selection and line length 100, mypy with `strict` and five extra error codes. Both are in
 `src/python_qa/defaults/`. A project's own coverage.py configuration decides what is measured;
-without one, python-qa measures `paths` other than test directories.
+without one, python-qa measures `paths` other than test directories. A `fail_under` the
+project's coverage.py configuration sets is used as it stands; `coverage.fail_under` applies only
+where the project has set none.
 
 ## Defaults for what the method leaves to the project
 

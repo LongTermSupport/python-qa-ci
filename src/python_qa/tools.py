@@ -73,11 +73,35 @@ def uses_own_coverage_config(root: Path) -> bool:
     )
 
 
+def coverage_floor_configured(root: Path) -> bool:
+    """Return True when the project's own coverage.py configuration sets fail_under."""
+    report = read_pyproject(root).get("tool", {}).get("coverage", {}).get("report", {})
+    if "fail_under" in report:
+        return True
+    sections = {
+        ".coveragerc": "report",
+        "setup.cfg": "coverage:report",
+        "tox.ini": "coverage:report",
+    }
+    return any(
+        (root / name).is_file() and _ini_option(root / name, section, "fail_under")
+        for name, section in sections.items()
+    )
+
+
 def _ini_has_section(path: Path, section: str) -> bool:
+    return _ini_parser(path).has_section(section)
+
+
+def _ini_option(path: Path, section: str, option: str) -> bool:
+    return _ini_parser(path).has_option(section, option)
+
+
+def _ini_parser(path: Path) -> configparser.ConfigParser:
     parser = configparser.ConfigParser()
     with contextlib.suppress(configparser.Error):
         parser.read_string(path.read_text(encoding="utf-8"))
-    return parser.has_section(section)
+    return parser
 
 
 def pylint_args(config: Config) -> list[str]:
@@ -283,7 +307,14 @@ def _test_commands(config: Config) -> list[list[str]]:
     if not uses_own_coverage_config(config.root):
         measured = [path for path in config.paths if Path(path).name not in _TEST_DIRECTORIES]
         source = ["--source=" + ",".join(measured)] if measured else []
+    # A floor the project set in its own coverage.py configuration is the project's decision;
+    # passing ours on the command line would override it, upwards or downwards.
+    floor = (
+        []
+        if coverage_floor_configured(config.root)
+        else [f"--fail-under={config.coverage_fail_under}"]
+    )
     return [
         [python, "-m", "coverage", "run", *source, "-m", "pytest"],
-        [python, "-m", "coverage", "report", f"--fail-under={config.coverage_fail_under}"],
+        [python, "-m", "coverage", "report", *floor],
     ]
