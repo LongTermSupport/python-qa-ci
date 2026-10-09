@@ -1,0 +1,12 @@
+# python-qa's mypy configuration, used only when a project has no mypy configuration of its own
+# (no [tool.mypy], mypy.ini, .mypy.ini or [mypy] in setup.cfg).
+[tool.mypy]
+strict = true
+warn_unreachable = true
+enable_error_code = [
+    "ignore-without-code",
+    "possibly-undefined",
+    "redundant-expr",
+    "truthy-bool",
+    "unused-awaitable",
+]

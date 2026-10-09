@@ -1,0 +1,53 @@
+# python-qa's Ruff configuration, used only when a project has no Ruff configuration of its own
+# (no [tool.ruff], ruff.toml or .ruff.toml). Rules are chosen for hazards: wrong output produced
+# silently, a crash, an error hidden, or code that cannot be changed safely. Style is left to the
+# formatter, and rules that conflict with it are not selected.
+
+[lint]
+select = [
+    "E4",    # import placement
+    "E7",    # statements
+    "E9",    # syntax and io errors
+    "F",     # pyflakes: undefined names, unused imports and variables
+    "W605",  # invalid escape sequence
+    "I",     # import order, so a merge cannot reorder imports silently
+    "A",     # shadowed builtins
+    "ARG",   # unused arguments
+    "ASYNC", # blocking calls in async code
+    "B",     # bugbear: likely bugs
+    "BLE",   # blind except
+    "C4",    # comprehensions
+    "DTZ",   # naive datetimes
+    "ERA",   # commented-out code
+    "EXE",   # executable flags and shebangs
+    "FURB",  # refurb
+    "G",     # logging format
+    "LOG",   # logging misuse
+    "N",     # naming
+    "PERF",  # performance pitfalls
+    "PGH",   # blanket suppressions
+    "PIE",   # unnecessary constructs
+    "PLE",   # pylint errors
+    "PLW",   # pylint warnings
+    "PT",    # pytest style that hides failures
+    "PTH",   # pathlib
+    "RET",   # return consistency
+    "RUF",   # ruff's own, including unused suppression comments (RUF100)
+    "S",     # security
+    "SIM",   # simplifications
+    "SLF",   # private member access
+    "T20",   # print and pprint left in
+    "TID",   # banned imports
+    "TRY",   # exception handling
+    "UP",    # pyupgrade
+]
+ignore = [
+    "S603", # fires on every subprocess call, a fixed argument list included; shell=True is S602
+    "S607", # fires on every executable named without a path, which is how PATH lookup works
+]
+
+[lint.per-file-ignores]
+# Tests assert, reach into the code under test, and take fixtures they do not use by name.
+"**/tests/**" = ["S101", "SLF001", "ARG001", "ARG002"]
+"**/test_*.py" = ["S101", "SLF001", "ARG001", "ARG002"]
+"**/conftest.py" = ["S101", "SLF001", "ARG001", "ARG002"]
