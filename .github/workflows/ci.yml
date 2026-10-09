@@ -25,11 +25,13 @@ jobs:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
-          enable-cache: true
+      # uv from PyPI, pinned, so the lock file is read by the version that wrote it.
       - name: Install
-        run: uv sync --locked
+        run: |
+          python -m pip install uv==0.12.24
+          uv sync --locked --python "$(command -v python)"
       - name: python-qa run
         run: uv run python-qa run
