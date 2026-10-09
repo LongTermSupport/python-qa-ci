@@ -33,18 +33,18 @@ project's test suite already depends on them.
 `python-qa run` executes three phases in a fixed order. Every format and detector lane runs, so
 one invocation reports every static finding; if any of them fails, the runners do not run.
 
-| Phase     | Lane (`-t` name) | What                                                                                                                   |
-| --------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| format    | `fmt`            | `ruff format` (fixes locally; `--no-fix`, `--ci` or a non-empty `CI` variable check instead)                           |
-| detectors | `record`         | the project record: structure, justifications, budget, expiry (`pyqaci.record.*`)                                      |
-|           | `suppression`    | every suppression comment and configuration setting held to the record (`pyqaci.suppression.*`, `pyqaci.record.stale`) |
-|           | `summary`        | the agent summary region is current (`pyqaci.summary.stale`), when a summary file is set                               |
-|           | `docs`           | every bundled and project defence has a complete page (`pyqaci.docs.dangling`)                                         |
-|           | `ruff`           | `ruff check`, the project's Ruff configuration or the bundled one                                                      |
-|           | `mypy`           | mypy, the project's configuration or the bundled strict one                                                            |
-|           | `pylint`         | Pylint as the bespoke rule host: the bundled plugin, the project's plugins, nothing else                               |
-| runners   | `test`           | pytest, under coverage.py with `coverage.fail_under` when the `coverage` switch is on                                  |
-|           | `audit`          | pip-audit over the environment (off by default; needs network and the `audit` extra)                                   |
+| Phase     | Lane (`-t` name) | What                                                                                                                              |
+| --------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| format    | `fmt`            | `ruff format`, or Black with `formatter = "black"` (fixes locally; `--no-fix`, `--ci` or a non-empty `CI` variable check instead) |
+| detectors | `record`         | the project record: structure, justifications, budget, expiry (`pyqaci.record.*`)                                                 |
+|           | `suppression`    | every suppression comment and configuration setting held to the record (`pyqaci.suppression.*`, `pyqaci.record.stale`)            |
+|           | `summary`        | the agent summary region is current (`pyqaci.summary.stale`), when a summary file is set                                          |
+|           | `docs`           | every bundled and project defence has a complete page (`pyqaci.docs.dangling`)                                                    |
+|           | `ruff`           | `ruff check`, the project's Ruff configuration or the bundled one                                                                 |
+|           | `mypy`           | mypy, the project's configuration or the bundled strict one                                                                       |
+|           | `pylint`         | Pylint as the bespoke rule host: the bundled plugin, the project's plugins, nothing else                                          |
+| runners   | `test`           | pytest, under coverage.py with `coverage.fail_under` when the `coverage` switch is on                                             |
+|           | `audit`          | pip-audit over the environment (off by default; needs network and the `audit` extra)                                              |
 
 Options: `-t <lane>` (repeatable; overrides the switches), `-p <path>` (repeatable; one file is
 enough; limits the format and detector lanes to those paths and does not run the runners),
@@ -167,6 +167,7 @@ paths = ["src", "tests"]      # those present; "." when neither is
 scan_exclude = []             # globs kept out of the suppression scan and the Pylint pass
 pylint_plugins = []           # the project's own Pylint plugin modules
 pylint_enable = []            # Pylint's own messages the project adopts as defences
+formatter = "ruff"            # or "black", for a project formatted by Black (install it yourself)
 
 [tool.python-qa.record]
 path = "qa/record.toml"

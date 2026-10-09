@@ -18,6 +18,7 @@ from python_qa.suppression import (
     comment_sites,
     config_sites,
     project_files,
+    scope_files,
 )
 from python_qa.tools import lane_commands
 
@@ -108,7 +109,7 @@ def suppression_findings(
     root = config.root
     files = project_files(root, config.scan_exclude)
     if paths is not None:
-        files = [name for name in files if any(_within(name, path) for path in paths)]
+        files = scope_files(root, config.scan_exclude, paths)
     findings: list[Finding] = []
     sites: list[Site] = [] if paths is not None else config_sites(root)
     for name in files:
@@ -125,11 +126,6 @@ def _file_sites(root: Path, name: str) -> list[Site] | Finding:
         return comment_sites(name, (root / name).read_text(encoding="utf-8"))
     except (SyntaxError, UnicodeDecodeError) as error:
         return Finding(name, 0, UNSCANNED, f"cannot be scanned: {error}")
-
-
-def _within(name: str, path: str) -> bool:
-    prefix = path.rstrip("/")
-    return prefix in {"", "."} or name == prefix or name.startswith(prefix + "/")
 
 
 def run_pipeline(

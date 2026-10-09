@@ -298,6 +298,26 @@ def project_files(root: Path, scan_exclude: tuple[str, ...]) -> list[str]:
     )
 
 
+def within(name: str, path: str) -> bool:
+    """Return True when the relative file name is path itself or lies below it."""
+    prefix = path.rstrip("/")
+    return prefix in {"", "."} or name == prefix or name.startswith(prefix + "/")
+
+
+def scope_files(root: Path, scan_exclude: tuple[str, ...], paths: tuple[str, ...]) -> list[str]:
+    """Return the project's Python files under paths, listed one by one.
+
+    A detector handed a directory decides for itself which files it contains; Pylint walks only
+    importable packages and skips a directory without an __init__.py below one. Naming every
+    file makes the detector's scope the sweep scope.
+    """
+    return [
+        name
+        for name in project_files(root, scan_exclude)
+        if any(within(name, path) for path in paths)
+    ]
+
+
 def _git_files(root: Path) -> list[str] | None:
     if not (root / ".git").exists():
         return None

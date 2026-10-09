@@ -22,6 +22,9 @@ TOOLS = (
     "audit",
 )
 OFF_BY_DEFAULT = frozenset({"audit"})
+# Ruff's formatter by default; Black for a project already formatted by it, which must then
+# install Black itself, since python-qa does not depend on it.
+FORMATTERS = ("ruff", "black")
 
 _TOP_KEYS = frozenset(
     {
@@ -35,6 +38,7 @@ _TOP_KEYS = frozenset(
         "coverage",
         "summary",
         "sensitive_repr",
+        "formatter",
     }
 )
 _RECORD_KEYS = frozenset({"path", "max_total", "max_per_rule", "max_review_days"})
@@ -68,6 +72,7 @@ class Config:
     tools: dict[str, bool]
     coverage_fail_under: float
     summary_file: str | None
+    formatter: str
     sensitive_names: tuple[str, ...] | None
     redacting_types: tuple[str, ...] | None
 
@@ -114,6 +119,7 @@ def load_config(root: Path) -> Config:
         tools=_tools(table),
         coverage_fail_under=_coverage(table),
         summary_file=_string(summary, "file", "[tool.python-qa.summary]"),
+        formatter=_formatter(table),
         sensitive_names=_strings(sensitive, "names", "[tool.python-qa.sensitive_repr]"),
         redacting_types=_strings(sensitive, "redacting_types", "[tool.python-qa.sensitive_repr]"),
     )
@@ -148,6 +154,14 @@ def _tools(table: dict[str, Any]) -> dict[str, bool]:
             raise ConfigError(msg)
         tools[name] = value
     return tools
+
+
+def _formatter(table: dict[str, Any]) -> str:
+    formatter = _string(table, "formatter", "[tool.python-qa]") or "ruff"
+    if formatter not in FORMATTERS:
+        msg = f"[tool.python-qa]: formatter must be one of {', '.join(FORMATTERS)}"
+        raise ConfigError(msg)
+    return formatter
 
 
 def _coverage(table: dict[str, Any]) -> float:

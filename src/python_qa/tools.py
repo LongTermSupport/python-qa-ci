@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from python_qa.config import read_pyproject
+from python_qa.suppression import scope_files
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -229,7 +230,11 @@ def lane_commands(
     check = ["--check", "--diff"] if no_fix else []
     ruff_config = ruff_config_args(config.root)
     return {
-        "fmt": [[python, "-m", "ruff", "format", *check, *ruff_config, *targets]],
+        "fmt": [
+            [python, "-m", "black", *check, *targets]
+            if config.formatter == "black"
+            else [python, "-m", "ruff", "format", *check, *ruff_config, *targets]
+        ],
         "ruff": [
             [
                 python,
@@ -243,10 +248,31 @@ def lane_commands(
             ]
         ],
         "mypy": [[python, "-m", "mypy", *mypy_config_args(config.root), *targets]],
-        "pylint": [[python, "-m", "pylint", *pylint_args(config), *targets]],
+        "pylint": pylint_commands(config, tuple(targets)),
         "test": _test_commands(config),
         "audit": [[python, "-m", "pip_audit", "--progress-spinner=off"]],
     }
+
+
+def pylint_commands(
+    config: Config, paths: tuple[str, ...], symbol: str | None = None
+) -> list[list[str]]:
+    """Return the Pylint command over every Python file under paths, or none when there is none.
+
+    Every file is named on the command line: given a directory, Pylint walks only importable
+    packages, so a file below a directory without an __init__.py would never be analysed.
+    """
+    files = [
+        name
+        for name in scope_files(config.root, config.scan_exclude, paths)
+        if name.endswith(".py")
+    ]
+    if not files:
+        return []
+    args = pylint_args(config)
+    if symbol is not None:
+        args = [f"--enable={symbol}" if arg.startswith("--enable=") else arg for arg in args]
+    return [[sys.executable, "-m", "pylint", *args, "--", *files]]
 
 
 def _test_commands(config: Config) -> list[list[str]]:

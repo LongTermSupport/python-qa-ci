@@ -4,7 +4,7 @@ Reported by the `fmt` lane.
 
 ## What it flags
 
-Files `ruff format` would change. Locally the lane formats them in place and passes; with
+Files `ruff format` would change, or Black with `formatter = "black"` in `[tool.python-qa]`. Locally the lane formats them in place and passes; with
 `--no-fix`, or when the `CI` environment variable is set, it checks instead and prints the diff.
 
 ## Why

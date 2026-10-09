@@ -20,6 +20,7 @@ def test_defaults_without_a_table(tmp_path: Path) -> None:
     assert config.tools["audit"] is False
     assert all(config.tools[name] for name in TOOLS if name != "audit")
     assert config.summary_file is None
+    assert config.formatter == "ruff"
 
 
 def test_default_paths_are_src_and_tests_when_present(tmp_path: Path) -> None:
@@ -100,6 +101,7 @@ def test_record_shorthand(tmp_path: Path) -> None:
         ("[tool.python-qa.summary]\nfile = 3\n", "string"),
         ("[tool.python-qa.sensitive_repr]\nother = []\n", "unknown key"),
         ("[tool.python-qa]\nrecord = 3\n", "must be a table"),
+        ('[tool.python-qa]\nformatter = "yapf"\n', "formatter must be"),
         ("[tool.python-qa\n", "cannot parse"),
     ],
 )

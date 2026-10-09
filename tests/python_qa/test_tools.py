@@ -166,6 +166,15 @@ def test_lane_commands(tmp_path: Path) -> None:
     ]
 
 
+def test_black_formatter(tmp_path: Path) -> None:
+    write(tmp_path, "pyproject.toml", '[tool.python-qa]\nformatter = "black"\npaths = ["pkg"]\n')
+    config = load_config(tmp_path)
+    checking = lane_commands(config, paths=None, no_fix=True)["fmt"]
+    fixing = lane_commands(config, paths=None, no_fix=False)["fmt"]
+    assert checking == [[sys.executable, "-m", "black", "--check", "--diff", "pkg"]]
+    assert fixing == [[sys.executable, "-m", "black", "pkg"]]
+
+
 def test_test_lane_without_coverage(tmp_path: Path) -> None:
     write(tmp_path, "pyproject.toml", "[tool.python-qa.tools]\ncoverage = false\n")
     commands = lane_commands(load_config(tmp_path), paths=None, no_fix=True)

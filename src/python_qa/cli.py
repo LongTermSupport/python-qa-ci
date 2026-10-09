@@ -20,7 +20,7 @@ from python_qa.docs import check_docs, resolve
 from python_qa.pipeline import LANES, METHOD_LINE, UsageError, run_pipeline, suppression_findings
 from python_qa.record import RecordEntry, check_record, load_record
 from python_qa.summary import check_summary, write_summary
-from python_qa.tools import lane_commands, pylint_args, pylint_messages
+from python_qa.tools import lane_commands, pylint_commands, pylint_messages
 
 if TYPE_CHECKING:
     from python_qa.config import Config
@@ -194,12 +194,11 @@ def _rule(config: Config, identifier: str, paths: tuple[str, ...]) -> int:
     messages = pylint_messages(config)
     symbols = {m.symbol: m.symbol for m in messages} | {m.msgid: m.symbol for m in messages}
     if name in symbols:
-        args = [
-            f"--enable={symbols[name]}" if arg.startswith("--enable=") else arg
-            for arg in pylint_args(config)
-        ]
-        command = [sys.executable, "-m", "pylint", *args, *paths]
-        code = subprocess.run(command, cwd=config.root, check=False).returncode
+        commands = pylint_commands(config, paths, symbols[name])
+        if not commands:
+            msg = f"no Python file under {', '.join(paths)}"
+            raise UsageError(msg)
+        code = subprocess.run(commands[0], cwd=config.root, check=False).returncode
         fatal_or_usage = 1 | 32
         return 0 if code == 0 else 2 if code & fatal_or_usage else 1
     if re.fullmatch(r"[A-Z]+[0-9]+", name) and resolve(name, config) is not None:
@@ -246,6 +245,6 @@ def _tools(config: Config) -> int:
         state = "on" if config.tools[lane] else "off"
         if lane == "summary" and config.summary_file is None:
             state = "off (no summary file)"
-        what = " ".join(commands[lane][0][2:4]) if lane in commands else "python-qa"
+        what = " ".join(commands[lane][0][2:4]) if commands.get(lane) else "python-qa"
         sys.stdout.write(f"{lane:12} {state:22} {what}\n")
     return 0
