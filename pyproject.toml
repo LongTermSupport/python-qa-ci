@@ -1,0 +1,82 @@
+[project]
+name = "python-qa-ci"
+version = "0.1.0"
+description = "One QA entry point for Python projects, built for the Defence Before Fix method"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Quality Assurance",
+    "Typing :: Typed",
+]
+# Detectors are pinned exactly: a new release can add findings, which must arrive as a
+# deliberate bump of this package rather than as a red run one morning. Runners are floors,
+# because the project's own test suite already depends on them.
+dependencies = [
+    "ruff==0.16.10",
+    "mypy==2.4.0",
+    "pylint==4.1.2",
+    "astroid==4.3.4",
+    "pytest>=9.0",
+    "coverage>=7.10",
+]
+
+[project.optional-dependencies]
+audit = ["pip-audit==2.10.1"]
+
+[project.scripts]
+python-qa = "python_qa.cli:main"
+
+[project.urls]
+Repository = "https://github.com/LongTermSupport/python-qa-ci"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/python_qa"]
+
+# Defence Before Fix conformance declaration (https://defence-before-fix.github.io/),
+# the two levels of toolchain specification clause 9.1. docs/CONFORMANCE.md is the evidence.
+[tool.defence-before-fix]
+method = "1.1.0"
+toolchain = "0.2.0"
+detector = "1.0.0"
+known-gaps = [
+    "TOOLING-SPEC 4.1: Ruff and mypy run off-the-shelf rules through the python-qa wrapper; neither can host a bespoke rule, so no defence is routed through them, but their findings block as checks.",
+    "TOOLING-SPEC 4.2: mypy error codes resolve offline only to the one-line description mypy ships in mypy.errorcodes; mypy has no fuller offline documentation.",
+]
+
+[tool.defence-before-fix.project]
+method = "1.1.0"
+toolchain = "0.2.0"
+known-gaps = [
+    "TOOLING-SPEC 4.1: as the artefact; this repository runs Ruff and mypy as checks beside its Pylint defences.",
+]
+
+# No [tool.ruff] or [tool.mypy]: this repository runs on the bundled defaults it ships, so the
+# defaults are exercised here before any consuming project meets them.
+[tool.python-qa]
+paths = ["src", "tests"]
+
+[tool.python-qa.coverage]
+fail_under = 90
+
+[tool.python-qa.summary]
+file = "AGENTS.md"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--strict-config", "--import-mode=importlib"]
+
+[tool.coverage.run]
+source = ["python_qa"]
+branch = true
