@@ -204,25 +204,43 @@ def _line(text: str, *needles: str) -> int:
     return 0
 
 
+def _line_in(text: str, key: str, code: str) -> int:
+    """Return the line naming code inside the setting key, not an earlier mention elsewhere.
+
+    The setting runs from its key, or its table header, to the next bare key or table header
+    (for a table such as per-file-ignores, to the next table header only).
+    """
+    lines = text.splitlines()
+    table = key.endswith("per-file-ignores")
+    start = re.compile(
+        rf"^\s*\[[^\]]*\b{re.escape(key)}\]\s*$|^\s*{re.escape(key)}\s*=", re.MULTILINE
+    )
+    stop = re.compile(r"^\s*\[" if table else r"^\s*\[|^\s*[A-Za-z_-]+\s*=")
+    needles = (f'"{code}"', f"'{code}'")
+    for index, line in enumerate(lines):
+        if not start.match(line):
+            continue
+        for offset, candidate in enumerate(lines[index:]):
+            if offset and stop.match(candidate):
+                break
+            if any(needle in candidate for needle in needles):
+                return index + offset + 1
+    return _line(text, *needles)
+
+
 def _ruff_sites(display: str, table: dict[str, Any], text: str) -> list[Site]:
     found: list[Site] = []
     lint = table.get("lint", {}) if isinstance(table.get("lint"), dict) else {}
     for section in (table, lint):
         for key in ("ignore", "extend-ignore"):
             found.extend(
-                Site(display, _line(text, f'"{code}"', f"'{code}'"), "ruff", (code,), key)
+                Site(display, _line_in(text, key, code), "ruff", (code,), key)
                 for code in section.get(key, [])
             )
         for key in ("per-file-ignores", "extend-per-file-ignores"):
             for pattern, codes in section.get(key, {}).items():
                 found.extend(
-                    Site(
-                        display,
-                        _line(text, f'"{code}"', f"'{code}'"),
-                        "ruff",
-                        (code,),
-                        f"{key} {pattern}",
-                    )
+                    Site(display, _line_in(text, key, code), "ruff", (code,), f"{key} {pattern}")
                     for code in codes
                 )
         for key in ("exclude", "extend-exclude"):
