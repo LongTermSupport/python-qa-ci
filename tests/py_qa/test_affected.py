@@ -1,8 +1,13 @@
 """Tests for choosing the tests a change can affect, from the project's import and path graph."""
 
+import json
+import subprocess
 from pathlib import Path
 
-from py_qa.affected import Selection, select_tests
+import pytest
+
+from py_qa import __version__, affected
+from py_qa.affected import Selection, _cached_scan, scan_source, select_tests
 from py_qa.config import load_config
 from py_qa.diff import Change
 
@@ -122,6 +127,17 @@ def test_the_map_covers_files_the_graph_cannot_reach(tmp_path: Path) -> None:
     assert selection.unmapped == ()
 
 
+def test_a_map_entry_can_exclude_files_its_glob_matches(tmp_path: Path) -> None:
+    root = project(
+        tmp_path,
+        '[[tool.py-qa.diff.map]]\nglob = "docs/**/*.md"\nexclude = ["docs/guide.md"]\n'
+        'tests = ["tests/test_b.py"]\n',
+    )
+    selection = select(root, "docs/guide.md")
+    assert selection.tests == ()
+    assert selection.unmapped == ("docs/guide.md",)
+
+
 def test_a_map_naming_a_missing_test_is_reported(tmp_path: Path) -> None:
     root = project(tmp_path, '[[tool.py-qa.diff.map]]\nglob = "*.md"\ntests = ["tests/gone.py"]\n')
     assert select(root, "docs/guide.md").missing == ("tests/gone.py",)
@@ -159,3 +175,70 @@ def test_unparsable_python_is_skipped_not_fatal(tmp_path: Path) -> None:
     write(root, {"tests/test_broken.py": "def (:\n"})
     selection = select(root, "tests/test_broken.py")
     assert selection.tests == ("tests/test_broken.py",)
+
+
+def git_project(tmp_path: Path) -> Path:
+    root = project(tmp_path)
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    return root
+
+
+def test_scans_are_cached_and_a_changed_file_is_read_again(tmp_path: Path) -> None:
+    root = git_project(tmp_path)
+    cache = root / ".git" / "py-qa" / "affected-cache.json"
+    assert select(root, "src/pkg/b.py").tests == ("tests/test_b.py",)
+    assert cache.is_file()
+    stored = json.loads(cache.read_text(encoding="utf-8"))
+    assert "tests/test_b.py" in stored["files"]
+    assert select(root, "src/pkg/b.py").tests == ("tests/test_b.py",)
+    write(root, {"tests/test_b.py": "import pkg.other  # now tests something else\n"})
+    assert select(root, "src/pkg/b.py").tests == ()
+
+
+def test_a_damaged_cache_is_read_as_empty(tmp_path: Path) -> None:
+    root = git_project(tmp_path)
+    cache = root / ".git" / "py-qa" / "affected-cache.json"
+    cache.parent.mkdir(parents=True)
+    for damaged in (
+        "not json",
+        '{"version": "0"}',
+        json.dumps({"version": __version__, "files": 3}),
+    ):
+        cache.write_text(damaged, encoding="utf-8")
+        assert select(root, "src/pkg/b.py").tests == ("tests/test_b.py",)
+    entry = {"tests/test_b.py": [[0, 0], [["x", 0]], []]}
+    cache.write_text(json.dumps({"version": __version__, "files": entry}), encoding="utf-8")
+    assert select(root, "src/pkg/b.py").tests == ("tests/test_b.py",)
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        [[1, 2], [], []],
+        [[3, 4], "imports", []],
+        [[3, 4], [["pkg", 0]], []],
+        [[3, 4], [["pkg", "0", []]], []],
+        "entry",
+    ],
+)
+def test_a_stale_or_malformed_cache_entry_is_parsed_again(entry: object) -> None:
+    assert _cached_scan(entry, [3, 4]) is None
+
+
+def test_a_cache_entry_is_read_back() -> None:
+    entry = [[3, 4], [["pkg", 1, ["x"]]], ["pkg.mod"]]
+    assert _cached_scan(entry, [3, 4]) == ([("pkg", 1, ("x",))], ["pkg.mod"])
+
+
+def test_many_files_are_parsed_in_parallel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(affected, "PARALLEL_THRESHOLD", 1)
+    assert select(project(tmp_path), "src/pkg/b.py").tests == ("tests/test_b.py",)
+
+
+def test_scan_source_reads_imports_and_name_like_strings() -> None:
+    imports, strings = scan_source(
+        "import a.b\nfrom . import c\nfrom .d import *\nX = 'pkg.mod'\nY = 'plain'\nZ = 'a/b.sh'\n"
+    )
+    assert imports == [("a.b", 0, ()), ("", 1, ("c",)), ("d", 1, ())]
+    assert strings == ["pkg.mod", "a/b.sh"]
+    assert scan_source("def (:\n") == ([], [])

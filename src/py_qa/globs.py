@@ -1,7 +1,8 @@
 """Path globs for project checks and the diff map, matched against repository-relative paths.
 
 `**` matches any number of directories, `*` and `?` stay within one, and a pattern with no `/`
-matches a file name at any depth, as a .gitignore pattern does.
+matches a file name at any depth, as a .gitignore pattern does; a leading `/` anchors one to the
+repository root.
 """
 
 from __future__ import annotations
@@ -11,8 +12,9 @@ import re
 
 
 @functools.cache
-def _compile(pattern: str) -> re.Pattern[str]:
-    anchored = "/" in pattern
+def _compile(raw: str) -> re.Pattern[str]:
+    anchored = "/" in raw
+    pattern = raw.lstrip("/")
     parts: list[str] = []
     index = 0
     while index < len(pattern):
@@ -40,7 +42,7 @@ def _compile(pattern: str) -> re.Pattern[str]:
 
 def match_glob(pattern: str, path: str) -> bool:
     """Return True when the repository-relative path matches the glob."""
-    return _compile(pattern.lstrip("/")).match(path) is not None
+    return _compile(pattern).match(path) is not None
 
 
 def match_any(patterns: tuple[str, ...], path: str) -> bool:

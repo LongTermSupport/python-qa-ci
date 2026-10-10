@@ -294,3 +294,178 @@ def test_the_json_report_of_a_full_run(tmp_path: Path) -> None:
     statuses = {lane["name"]: lane["status"] for lane in data["lanes"]}
     assert statuses["mypy"] == "FAIL"
     assert statuses["test"] == "not run"
+
+
+VERDICT = """
+[[tool.py-qa.check]]
+name = "audited"
+command = ["scripts/audit.py"]
+description = "Every audited thing holds."
+doc = "scripts/audit.py"
+verdict = { file = "out/audit.json", key = "summary.passed" }
+"""
+
+
+class Writer:
+    """Writes the check's verdict file with the given content, then exits with the given code."""
+
+    def __init__(self, root: Path, content: str | None, code: int = 0) -> None:
+        self.root = root
+        self.content = content
+        self.code = code
+
+    def __call__(self, command: list[str], cwd: Path) -> int:
+        if self.content is not None:
+            path = self.root / "out" / "audit.json"
+            path.parent.mkdir(exist_ok=True)
+            path.write_text(self.content, encoding="utf-8")
+        return self.code
+
+
+@pytest.mark.parametrize(
+    ("content", "code", "expected", "message"),
+    [
+        ('{"summary": {"passed": true}}', 0, 0, None),
+        ('{"summary": {"passed": false}}', 0, 1, "out/audit.json reports summary.passed = false"),
+        ('{"summary": {}}', 0, 1, "out/audit.json reports summary.passed = null"),
+        ('{"summary": {"passed": true}}', 1, 1, "audited failed"),
+        ("not json", 0, 1, "is not JSON"),
+        (None, 0, 1, "this run did not write its verdict file out/audit.json"),
+    ],
+)
+def test_a_check_with_a_verdict_file_passes_only_when_the_file_says_so(
+    tmp_path: Path, content: str | None, code: int, expected: int, message: str | None
+) -> None:
+    root = project(tmp_path, VERDICT)
+    out = io.StringIO()
+    result = run_pipeline(
+        load_config(root),
+        requested=("audited",),
+        paths=None,
+        no_fix=True,
+        fail_fast=False,
+        out=out,
+        runner=Writer(root, content, code),
+        today=TODAY,
+    )
+    assert result == expected
+    if message is not None:
+        assert message in out.getvalue()
+
+
+def test_a_verdict_file_left_by_an_earlier_run_does_not_count(tmp_path: Path) -> None:
+    root = project(tmp_path, VERDICT)
+    (root / "out").mkdir()
+    (root / "out" / "audit.json").write_text('{"summary": {"passed": true}}', encoding="utf-8")
+    out = io.StringIO()
+    result = run_pipeline(
+        load_config(root),
+        requested=("audited",),
+        paths=None,
+        no_fix=True,
+        fail_fast=False,
+        out=out,
+        runner=Writer(root, None),
+        today=TODAY,
+    )
+    assert result == 1
+    assert "this run did not write its verdict file" in out.getvalue()
+
+
+def test_the_test_lane_can_be_judged_by_a_verdict_file_too(tmp_path: Path) -> None:
+    root = project(
+        tmp_path,
+        '[tool.py-qa.test]\ncommand = ["scripts/test.sh"]\n'
+        'diff_command = ["scripts/test.sh", "{tests}"]\n'
+        'verdict = { file = "out/audit.json", key = "summary.passed" }\n'
+        'diff_verdict = { file = "out/audit.json", key = "ok" }\n',
+    )
+
+    def lane(content: str, diff: Change | None = None) -> int:
+        return run_pipeline(
+            load_config(root),
+            requested=("test",),
+            paths=None,
+            no_fix=True,
+            fail_fast=False,
+            out=io.StringIO(),
+            runner=Writer(root, content),
+            today=TODAY,
+            change=diff,
+        )
+
+    assert lane('{"summary": {"passed": true}}') == 0
+    assert lane('{"summary": {"passed": false}}') == 1
+    assert lane('{"ok": true}', change("src/pkg/a.py")) == 0
+    assert lane('{"ok": false}', change("src/pkg/a.py")) == 1
+
+
+def test_skip_runs_every_lane_but_those_named(tmp_path: Path) -> None:
+    root = project(tmp_path, CHECKS)
+    out = io.StringIO()
+    runner = Recorder()
+    code = run_pipeline(
+        load_config(root),
+        requested=(),
+        paths=None,
+        no_fix=True,
+        fail_fast=False,
+        out=out,
+        runner=runner,
+        today=TODAY,
+        skipped=("test", "spelling"),
+    )
+    assert code == 0
+    assert runner.named("pytest") == []
+    assert runner.named("spelling") == []
+    assert runner.named("smoke.sh")
+    table = out.getvalue()
+    assert "skip     spelling" in table
+    assert "skip     test" in table
+
+
+@pytest.mark.parametrize(
+    ("requested", "skipped", "message"),
+    [((), ("nope",), "unknown tool nope"), (("ruff",), ("mypy",), "-t names the lanes")],
+)
+def test_skip_is_checked(
+    tmp_path: Path, requested: tuple[str, ...], skipped: tuple[str, ...], message: str
+) -> None:
+    with pytest.raises(UsageError, match=message):
+        run_pipeline(
+            load_config(project(tmp_path)),
+            requested=requested,
+            paths=None,
+            no_fix=True,
+            fail_fast=False,
+            out=io.StringIO(),
+            runner=Recorder(),
+            today=TODAY,
+            skipped=skipped,
+        )
+
+
+def test_a_skipped_runner_reads_as_skipped_when_the_runners_do_not_run(tmp_path: Path) -> None:
+    root = project(tmp_path, CHECKS)
+    out = io.StringIO()
+    run_pipeline(
+        load_config(root),
+        requested=(),
+        paths=None,
+        no_fix=True,
+        fail_fast=False,
+        out=out,
+        runner=Recorder(failing=("scripts/history.sh",)),
+        today=TODAY,
+        skipped=("test",),
+    )
+    table = out.getvalue()
+    assert "skip     test" in table
+    assert "not run  smoke" in table
+
+
+def test_the_table_widens_for_a_long_lane_name(tmp_path: Path) -> None:
+    root = project(tmp_path, CHECKS.replace('name = "smoke"', 'name = "a_very_long_check_name"'))
+    _, output = run(root, Recorder(), requested=("a_very_long_check_name", "ruff"))
+    assert "PASS     ruff                   " in output
+    assert "PASS     a_very_long_check_name " in output

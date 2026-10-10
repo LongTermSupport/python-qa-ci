@@ -50,6 +50,7 @@ def _parser() -> argparse.ArgumentParser:
 
     run = commands.add_parser("run", help="format, every detector, then the runners")
     run.add_argument("-t", "--tool", action="append", default=[], dest="tools", help="a lane")
+    run.add_argument("--skip", action="append", default=[], help="a lane not to run")
     run.add_argument("-p", "--path", action="append", dest="paths")
     run.add_argument("--diff", action="store_true", help="narrow every lane to what changed")
     run.add_argument("--base", help="the ref a diff run measures from (implies --diff)")
@@ -145,6 +146,7 @@ def _run(args: argparse.Namespace, config: Config) -> int:
             today=_today(),
             change=_change(config, base) if diff else None,
             report=getattr(args, "report", None),
+            skipped=tuple(getattr(args, "skip", [])),
         )
 
 
@@ -318,9 +320,11 @@ def _summary(config: Config, *, check: bool) -> int:
 
 
 def _tools(config: Config) -> int:
-    for lane in all_lanes(config):
+    lanes = all_lanes(config)
+    width = max(len(lane) for lane in lanes)
+    for lane in lanes:
         state = "on" if config.tools.get(lane, True) else "off"
         if lane == "summary" and config.summary_file is None:
             state = "off (no summary file)"
-        sys.stdout.write(f"{lane:12} {state:22} {lane_tool(config, lane)}\n")
+        sys.stdout.write(f"{lane:{width}} {state:22} {lane_tool(config, lane)}\n")
     return 0

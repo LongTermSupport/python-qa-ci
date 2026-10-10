@@ -159,6 +159,7 @@ description = "The installed command answers."
 doc = "docs/smoke.md"
 phase = "runners"
 diff = false
+verdict = { file = "out/smoke.json", key = "summary.passed" }
 """,
     )
     spelling, smoke = load_config(tmp_path).checks
@@ -172,6 +173,8 @@ diff = false
     assert smoke.diff_command is None
     assert spelling.in_diff
     assert not smoke.in_diff
+    assert spelling.verdict is None
+    assert smoke.verdict == ("out/smoke.json", ("summary", "passed"))
 
 
 CHECK = 'name = "x"\ncommand = ["x"]\ndescription = "X holds."\ndoc = "x.md"\n'
@@ -189,6 +192,9 @@ CHECK = 'name = "x"\ncommand = ["x"]\ndescription = "X holds."\ndoc = "x.md"\n'
         ("[[tool.py-qa.check]]\n" + CHECK + 'phase = "format"\n', "phase must be"),
         ("[[tool.py-qa.check]]\n" + CHECK + "paths = []\n", "paths"),
         ("[[tool.py-qa.check]]\n" + CHECK + 'diff = "no"\n', "diff must be"),
+        ("[[tool.py-qa.check]]\n" + CHECK + 'verdict = "x.json"\n', "verdict must be a table"),
+        ("[[tool.py-qa.check]]\n" + CHECK + 'verdict = { file = "x.json" }\n', "verdict must name"),
+        ("[[tool.py-qa.check]]\n" + CHECK + 'verdict = { file = "x", key = "" }\n', "verdict"),
         ("[[tool.py-qa.check]]\n" + CHECK.replace('"x"\ncommand', '"ruff"\ncommand'), "lane"),
         ("[[tool.py-qa.check]]\n" + CHECK + "[[tool.py-qa.check]]\n" + CHECK, "twice"),
         ("[[tool.py-qa.check]]\n" + CHECK + 'diff_command = ["x", "{nope}"]\n', "{nope}"),
@@ -221,16 +227,19 @@ tests = ["tests/test_docs.py"]
 [[tool.py-qa.diff.map]]
 glob = "*.txt"
 tests = []
+exclude = ["notes/*.txt"]
+why = "nothing reads them"
 """,
     )
     diff = load_config(tmp_path).diff
     assert diff.base == "origin/develop"
     assert diff.unmapped == "ignore"
     assert diff.full_tests_on == ("setup.py",)
-    assert [(entry.glob, entry.tests) for entry in diff.map] == [
-        ("docs/**/*.md", ("tests/test_docs.py",)),
-        ("*.txt", ()),
+    assert [(entry.glob, entry.tests, entry.exclude) for entry in diff.map] == [
+        ("docs/**/*.md", ("tests/test_docs.py",), ()),
+        ("*.txt", (), ("notes/*.txt",)),
     ]
+    assert diff.map[1].why == "nothing reads them"
 
 
 @pytest.mark.parametrize(
@@ -268,11 +277,15 @@ rule_doc_command = ["scripts/explain.py", "{identifier}"]
 command = ["scripts/test.sh"]
 diff_command = ["scripts/test.sh", "{tests}"]
 setup = [["scripts/start-db.sh"], ["scripts/seed.sh", "--quick"]]
+verdict = { file = "out/tests.json", key = "summary.passed_all" }
+diff_verdict = { file = "out/some.json", key = "ok" }
 """,
     )
     config = load_config(tmp_path)
     assert config.test_diff_command == ("scripts/test.sh", "{tests}")
     assert config.test_setup == (("scripts/start-db.sh",), ("scripts/seed.sh", "--quick"))
+    assert config.test_verdict == ("out/tests.json", ("summary", "passed_all"))
+    assert config.test_diff_verdict == ("out/some.json", ("ok",))
     assert config.lock is True
     assert config.lock_path == "untracked/qa.lock"
     assert config.rule_doc_command == ("scripts/explain.py", "{identifier}")

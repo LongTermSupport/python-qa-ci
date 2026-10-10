@@ -56,7 +56,7 @@ _RECORD_KEYS = frozenset({"path", "max_total", "max_per_rule", "max_review_days"
 # A project check runs among the detectors, or after the test lane among the runners.
 CHECK_PHASES = ("detectors", "runners")
 _CHECK_KEYS = frozenset(
-    {"name", "command", "description", "doc", "phase", "paths", "diff_command", "diff"}
+    {"name", "command", "description", "doc", "phase", "paths", "diff_command", "diff", "verdict"}
 )
 _CHECK_NAME = re.compile(r"[a-z][a-z0-9_-]*\Z")
 # The placeholders a command may hold as a whole argument, and where each one is allowed.
@@ -88,6 +88,10 @@ class ConfigError(Exception):
     """The configuration cannot be used; the message names the key."""
 
 
+# A JSON report a command writes, and the dotted key in it that must be true for a pass.
+Verdict = tuple[str, tuple[str, ...]]
+
+
 @dataclass(frozen=True)
 class RecordPolicy:
     """Where the project record lives and the limits that keep it small."""
@@ -110,6 +114,7 @@ class ProjectCheck:
     paths: tuple[str, ...] | None = None
     diff_command: tuple[str, ...] | None = None
     in_diff: bool = True
+    verdict: Verdict | None = None
 
 
 @dataclass(frozen=True)
@@ -119,6 +124,7 @@ class DiffMapEntry:
     glob: str
     tests: tuple[str, ...]
     why: str = ""
+    exclude: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -154,6 +160,8 @@ class Config:
     diff: DiffPolicy = field(default_factory=DiffPolicy)
     test_diff_command: tuple[str, ...] | None = None
     test_setup: tuple[tuple[str, ...], ...] = ()
+    test_verdict: Verdict | None = None
+    test_diff_verdict: Verdict | None = None
     lock: bool = True
     lock_path: str | None = None
     rule_doc_command: tuple[str, ...] | None = None
@@ -201,7 +209,9 @@ def load_config(root: Path) -> Config:
     _reject_unknown(summary, {"file"}, "[tool.py-qa.summary]")
     _reject_unknown(sensitive, {"names", "redacting_types"}, "[tool.py-qa.sensitive_repr]")
     test = _table(table.get("test", {}), "[tool.py-qa.test]")
-    _reject_unknown(test, {"command", "diff_command", "setup"}, "[tool.py-qa.test]")
+    _reject_unknown(
+        test, {"command", "diff_command", "setup", "verdict", "diff_verdict"}, "[tool.py-qa.test]"
+    )
     lock = table.get("lock", True)
     if not isinstance(lock, bool | str) or lock == "":
         msg = "[tool.py-qa]: lock must be true, false or a path"
@@ -228,6 +238,8 @@ def load_config(root: Path) -> Config:
             test, "diff_command", "[tool.py-qa.test]", "test diff_command", required="{tests}"
         ),
         test_setup=_setup(test),
+        test_verdict=_verdict(test, "[tool.py-qa.test]"),
+        test_diff_verdict=_verdict(test, "[tool.py-qa.test]", "diff_verdict"),
         lock=lock is not False,
         lock_path=lock if isinstance(lock, str) else None,
         rule_doc_command=_command(
@@ -325,9 +337,25 @@ def _checks(table: dict[str, Any]) -> tuple[ProjectCheck, ...]:
                 paths=paths,
                 diff_command=_command(entry, "diff_command", where, "check diff_command"),
                 in_diff=in_diff,
+                verdict=_verdict(entry, where),
             )
         )
     return tuple(checks)
+
+
+def _verdict(entry: dict[str, Any], where: str, name: str = "verdict") -> Verdict | None:
+    raw = entry.get(name)
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        msg = f"{where}: {name} must be a table: {{ file = <path>, key = <dotted key> }}"
+        raise ConfigError(msg)
+    _reject_unknown(raw, {"file", "key"}, f"{where} {name}")
+    file, key = raw.get("file"), raw.get("key")
+    if not isinstance(file, str) or not file or not isinstance(key, str) or not key.strip("."):
+        msg = f"{where}: {name} must name a file and a dotted key, both non-empty strings"
+        raise ConfigError(msg)
+    return file, tuple(part for part in key.split(".") if part)
 
 
 def _diff_policy(table: dict[str, Any]) -> DiffPolicy:
@@ -345,7 +373,7 @@ def _diff_policy(table: dict[str, Any]) -> DiffPolicy:
     entries: list[DiffMapEntry] = []
     for number, entry in enumerate(raw, start=1):
         at = f"[[tool.py-qa.diff.map]] #{number}"
-        _reject_unknown(entry, {"glob", "tests", "why"}, at)
+        _reject_unknown(entry, {"glob", "tests", "why", "exclude"}, at)
         glob = _string(entry, "glob", at)
         if not glob:
             msg = f"{at}: glob is required"
@@ -354,7 +382,8 @@ def _diff_policy(table: dict[str, Any]) -> DiffPolicy:
         if tests is None:
             msg = f"{at}: tests is required: the tests that cover the files, or [] for none"
             raise ConfigError(msg)
-        entries.append(DiffMapEntry(glob, tests, _string(entry, "why", at) or ""))
+        exclude = _strings(entry, "exclude", at) or ()
+        entries.append(DiffMapEntry(glob, tests, _string(entry, "why", at) or "", exclude))
     full = _strings(diff, "full_tests_on", where)
     return DiffPolicy(
         base=_string(diff, "base", where),

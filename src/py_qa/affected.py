@@ -402,7 +402,11 @@ def select_tests(config: Config, change: Change) -> Selection:
         if match_any(policy.full_tests_on, name):
             full_reasons.append(f"{name}: listed in [tool.py-qa.diff] full_tests_on")
             continue
-        mapped = [entry for entry in policy.map if match_glob(entry.glob, name)]
+        mapped = [
+            entry
+            for entry in policy.map
+            if match_glob(entry.glob, name) and not match_any(entry.exclude, name)
+        ]
         for entry in mapped:
             for test in entry.tests:
                 reached_by[test].add(name)

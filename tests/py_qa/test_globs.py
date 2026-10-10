@@ -24,6 +24,8 @@ from py_qa.globs import match_any, match_glob
         ("a?c.py", "a/c.py", False),
         ("**/*.sh", "run.sh", True),
         ("tests/[ab].py", "tests/a.py", True),
+        ("/README.md", "README.md", True),
+        ("/README.md", "docs/README.md", False),
     ],
 )
 def test_match_glob(pattern: str, path: str, expected: bool) -> None:

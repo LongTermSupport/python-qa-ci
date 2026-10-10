@@ -42,7 +42,7 @@ if TYPE_CHECKING:
     from pathlib import Path
     from typing import TextIO
 
-    from py_qa.config import Config, ProjectCheck
+    from py_qa.config import Config, ProjectCheck, Verdict
     from py_qa.diff import Change
 
     Runner = Callable[[list[str], Path], int]
@@ -227,26 +227,32 @@ def run_pipeline(
     clock: Callable[[], float] = time.monotonic,
     change: Change | None = None,
     report: Path | None = None,
+    skipped: tuple[str, ...] = (),
 ) -> int:
     """Run the selected lanes phase by phase and return the exit code: 0 pass, 1 fail.
 
     With change set the run is a diff run, narrowed to what changed; with report set, the
-    outcome of every lane is also written there as JSON.
+    outcome of every lane is also written there as JSON. Lanes in skipped do not run.
     """
     known = all_lanes(config)
-    unknown = sorted(set(requested) - set(known))
+    unknown = sorted((set(requested) | set(skipped)) - set(known))
     if unknown:
         msg = f"unknown tool {', '.join(unknown)}; known: {', '.join(known)}"
         raise UsageError(msg)
     if change is not None and paths is not None:
         msg = "-p and --diff each choose what to check; give one of them"
         raise UsageError(msg)
+    if requested and skipped:
+        msg = "-t names the lanes to run and --skip the lanes not to; give one of them"
+        raise UsageError(msg)
     state = _Run(config, paths, out, today, clock, clock(), runner, no_fix, change)
     if change is not None:
         _describe_change(change, out)
     failed = False
     for phase, lanes in lane_phases(config):
-        selected = [lane for lane in lanes if _selected(lane, config, requested)]
+        selected = [
+            lane for lane in lanes if lane not in skipped and _selected(lane, config, requested)
+        ]
         if phase == "runners" and selected and (failed or paths is not None):
             reason = (
                 "a format or detector lane failed"
@@ -255,12 +261,12 @@ def run_pipeline(
             )
             out.write(f"py-qa: runners not run: {reason}\n")
             state.results.extend(
-                LaneResult(lane, phase, "not run" if lane in selected else "off") for lane in lanes
+                LaneResult(lane, phase, _unrun_status(lane, selected, skipped)) for lane in lanes
             )
             break
         for lane in lanes:
             if lane not in selected:
-                state.results.append(LaneResult(lane, phase, "off"))
+                state.results.append(LaneResult(lane, phase, "skip" if lane in skipped else "off"))
                 continue
             out.write(f"== {lane} ==\n")
             out.flush()
@@ -271,6 +277,12 @@ def run_pipeline(
             if failed and fail_fast:
                 return _finish(state, failed=True, report=report)
     return _finish(state, failed=failed, report=report)
+
+
+def _unrun_status(lane: str, selected: list[str], skipped: tuple[str, ...]) -> str:
+    if lane in selected:
+        return "not run"
+    return "skip" if lane in skipped else "off"
 
 
 def _describe_change(change: Change, out: TextIO) -> None:
@@ -363,10 +375,52 @@ def _project_check(state: _Run, check: ProjectCheck) -> tuple[str, str]:
             tokens["{files}"] = [name for name in watched if name in present]
             tokens["{base}"] = [change.base]
             command = check.diff_command
-    if state.step(expand(command, tokens)) == 0:
+    passed = _checked(
+        state, check.name, check.verdict, lambda: state.step(expand(command, tokens)) == 0
+    )
+    if passed:
         return "PASS", ""
     out.write(f"py-qa: {check.name} failed: {check.name} (py-qa rule-doc {check.name})\n")
     return "FAIL", ""
+
+
+def _stamp(path: Path) -> tuple[int, int, int] | None:
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return None
+    return stat.st_ino, stat.st_mtime_ns, stat.st_size
+
+
+def _checked(state: _Run, lane: str, verdict: Verdict | None, run: Callable[[], bool]) -> bool:
+    """Run a command and return its verdict: its exit status, and its JSON report if it has one.
+
+    The exit status alone is not trusted for a command that reports its verdict in a file: the
+    file can say it failed, and a report left by an earlier run says nothing about this one.
+    """
+    if verdict is None:
+        return run()
+    name, key = verdict
+    path = state.config.root / name
+    before = _stamp(path)
+    if not run():
+        return False
+    after = _stamp(path)
+    if after is None or after == before:
+        state.out.write(f"py-qa: {lane}: this run did not write its verdict file {name}\n")
+        return False
+    try:
+        value: object = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        state.out.write(f"py-qa: {lane}: its verdict file {name} is not JSON: {error}\n")
+        return False
+    for part in key:
+        value = value.get(part) if isinstance(value, dict) else None
+    if value is not True:
+        dotted = ".".join(key)
+        state.out.write(f"py-qa: {lane}: {name} reports {dotted} = {json.dumps(value)}\n")
+        return False
+    return True
 
 
 def _test_lane(state: _Run) -> tuple[str, str]:
@@ -381,8 +435,12 @@ def _test_lane(state: _Run) -> tuple[str, str]:
             )
             return "FAIL", "setup failed"
     full = [expand(tuple(step), python) for step in test_commands(config)]
+
+    def whole() -> bool:
+        return _checked(state, "test", config.test_verdict, lambda: _external(state, "test", full))
+
     if state.change is None:
-        return ("PASS" if _external(state, "test", full) else "FAIL"), ""
+        return ("PASS" if whole() else "FAIL"), ""
     selection = select_tests(config, state.change)
     state.selection = selection
     _describe_selection(selection, out)
@@ -390,23 +448,26 @@ def _test_lane(state: _Run) -> tuple[str, str]:
         out.write("py-qa: test failed: [[tool.py-qa.diff.map]] names tests that do not exist\n")
         return "FAIL", "the diff map names missing tests"
     if selection.full:
-        return ("PASS" if _external(state, "test", full) else "FAIL"), "every test"
+        return ("PASS" if whole() else "FAIL"), "every test"
     if not selection.tests:
         out.write("py-qa: test: no test can be affected by the change\n")
         return "PASS", "no affected test"
+    note = f"{len(selection.tests)} affected test files"
     tokens = {**python, "{tests}": list(selection.tests), "{base}": [state.change.base]}
     if config.test_diff_command is not None:
         narrowed = [expand(config.test_diff_command, tokens)]
-    elif config.test_command is not None:
+        ok = _checked(
+            state, "test", config.test_diff_verdict, lambda: _external(state, "test", narrowed)
+        )
+        return ("PASS" if ok else "FAIL"), note
+    if config.test_command is not None:
         out.write(
             "py-qa: test: the project's test command takes no test list, so it runs whole; "
             "[tool.py-qa.test] diff_command narrows it\n"
         )
-        narrowed = full
-    else:
-        narrowed = [[sys.executable, "-m", "pytest", *selection.tests]]
-    ok = _external(state, "test", narrowed)
-    return ("PASS" if ok else "FAIL"), f"{len(selection.tests)} affected test files"
+        return ("PASS" if whole() else "FAIL"), note
+    pytest = [[sys.executable, "-m", "pytest", *selection.tests]]
+    return ("PASS" if _external(state, "test", pytest) else "FAIL"), note
 
 
 def _describe_selection(selection: Selection, out: TextIO) -> None:
@@ -430,10 +491,11 @@ def _finish(state: _Run, *, failed: bool, report: Path | None) -> int:
     out = state.out
     total = state.clock() - state.started
     out.write("\n")
+    width = max([12, *(len(result.name) for result in state.results)])
     for result in state.results:
         took = "" if result.seconds is None else f" {result.seconds:>6.1f}s"
-        out.write(f"{result.status:8} {result.name:12}{took}".rstrip() + "\n")
-    out.write(f"{'':8} {'total':12} {total:>6.1f}s\n")
+        out.write(f"{result.status:8} {result.name:{width}}{took}".rstrip() + "\n")
+    out.write(f"{'':8} {'total':{width}} {total:>6.1f}s\n")
     if report is not None:
         _write_report(state, report, failed=failed, total=total)
     if failed:
