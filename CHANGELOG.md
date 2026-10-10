@@ -3,6 +3,47 @@
 Every release of py-qa-ci, newest first. Versions follow semantic versioning; whilst the major
 version is 0, a minor release can break a consuming project, and says how.
 
+## 0.4.0
+
+From switching a large project's whole QA process onto py-qa: about forty checks of its own, a
+test suite run under several Pythons, a live service its tests talk to, and a need to check a
+change in seconds rather than an hour.
+
+### Added
+
+- **Project checks.** `[[tool.py-qa.check]]` makes a project's own check script a lane: run in
+  the detector phase or, with `phase = "runners"`, after the test lane; listed by `py-qa rules`,
+  `py-qa tools` and the agent summary; documented by `py-qa rule-doc <name>` from its `doc` file,
+  which the `docs` lane requires. `verdict` judges a check by the JSON report it writes as well as
+  by its exit status, so a report saying it failed, or one left by an earlier run, fails it.
+- **Diff runs.** `py-qa run --diff` (or `--base <ref>`) checks what changed against the merge base
+  with a base ref: the format, Ruff and Pylint lanes on the changed Python files, each project
+  check when a file it watches changed (`paths`, `diff_command`, `diff = false`), and the test
+  lane on the tests the change can affect, read from an import and file-reference graph. What
+  the graph cannot see is declared in `[tool.py-qa.diff]` (`full_tests_on`, `unmapped`, and
+  `[[tool.py-qa.diff.map]]`). `py-qa affected` prints the selection and why each test is in it.
+- `[tool.py-qa.test] diff_command`, `setup`, `verdict` and `diff_verdict`.
+- `rule_doc_command`: a project command that documents identifiers nothing else does.
+- `--json <file>`: the outcome of every lane, and a diff run's selection, as JSON.
+- `--skip <lane>`: every lane but those named.
+- A run lock: a second `py-qa run` in the same work tree exits 3 naming the holder. `lock`
+  chooses the file or turns it off; `--no-lock` runs regardless.
+
+### Fixed
+
+- The suppression scan tokenized every Python file, most of a large project's scan on Python
+  3.11; a file with no text a directive could start with is now not tokenized (45 s to 4 s on
+  2,300 files).
+- Black checked with `--diff`, which bypasses Black's cache, so every run re-read every file; it
+  now checks with its cache and prints the diff only for a failed check (40 s to 3 s).
+- A file named on the command line, as `-p` and a diff run name them, escaped Ruff's and Black's
+  exclusions; Ruff now runs with `--force-exclude` and Black with the project's exclusions as
+  `--force-exclude`.
+- A lane name longer than twelve characters pushed its row out of line in the closing table and
+  in `py-qa tools`.
+- A command that cannot be started now fails its lane with the shell's status, 127, and says so,
+  in place of a traceback.
+
 ## 0.3.0
 
 From running py-qa-ci as the QA entry point of a large Python project (about 2,300 files, its
