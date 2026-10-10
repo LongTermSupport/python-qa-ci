@@ -340,3 +340,35 @@ def test_coverage_ini_routes(tmp_path: Path, name: str, section: str) -> None:
     assert [(site.path, site.line, site.codes) for site in config_sites(tmp_path)] == [
         (name, 2, ("exclude_lines",))
     ]
+
+
+def test_ruff_settings_are_reported_inside_ruffs_own_tables(tmp_path: Path) -> None:
+    write(
+        tmp_path,
+        "pyproject.toml",
+        """[tool.black]
+extend-exclude = "gen"
+
+[tool.deptry]
+ignore = ["E501", "DEP002"]
+
+[tool.ruff]
+extend-exclude = ["gen"]
+
+[tool.ruff.lint]
+ignore = [
+    "E501",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+""",
+    )
+    found = {site.codes[0]: site.line for site in config_sites(tmp_path)}
+    assert found == {"exclude": 8, "E501": 12, "S101": 16}
+
+
+def test_ruff_toml_top_level_and_lint_tables(tmp_path: Path) -> None:
+    write(tmp_path, "ruff.toml", 'exclude = ["gen"]\n\n[lint]\nignore = ["E501"]\n')
+    found = {site.codes[0]: site.line for site in config_sites(tmp_path)}
+    assert found == {"exclude": 1, "E501": 4}

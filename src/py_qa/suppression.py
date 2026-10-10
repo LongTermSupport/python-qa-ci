@@ -173,11 +173,11 @@ def config_sites(root: Path) -> list[Site]:
     tool = read_pyproject(root).get("tool", {})
     text = _text(root / "pyproject.toml")
     if isinstance(tool.get("ruff"), dict):
-        found.extend(_ruff_sites("pyproject.toml", tool["ruff"], text))
+        found.extend(_ruff_sites("pyproject.toml", tool["ruff"], text, "tool.ruff"))
     for name in ("ruff.toml", ".ruff.toml"):
         path = root / name
         if path.is_file():
-            found.extend(_ruff_sites(name, _toml(path), _text(path)))
+            found.extend(_ruff_sites(name, _toml(path), _text(path), ""))
     if isinstance(tool.get("mypy"), dict):
         mypy = tool["mypy"]
         found.extend(_mypy_sites("pyproject.toml", mypy, mypy, text, _header(text, "tool.mypy")))
@@ -259,49 +259,76 @@ def _line(text: str, *needles: str) -> int:
     return 0
 
 
-def _line_in(text: str, key: str, code: str) -> int:
-    """Return the line naming code inside the setting key, not an earlier mention elsewhere.
+def _setting_line(text: str, table: str, key: str, code: str | None = None) -> int:
+    """Return the line of key in table, or of code inside its value; table "" is the top level.
 
-    The setting runs from its key, or its table header, to the next bare key or table header
-    (for a table such as per-file-ignores, to the next table header only).
+    The search stays inside the table, so a key another tool's table also uses (an `ignore` in
+    `[tool.deptry]`, an `extend-exclude` in `[tool.black]`) is never taken for Ruff's. A key
+    written as a sub-table of its own (`[tool.ruff.lint.per-file-ignores]`) is found there.
     """
     lines = text.splitlines()
-    table = key.endswith("per-file-ignores")
-    start = re.compile(
-        rf"^\s*\[[^\]]*\b{re.escape(key)}\]\s*$|^\s*{re.escape(key)}\s*=", re.MULTILINE
-    )
-    stop = re.compile(r"^\s*\[" if table else r"^\s*\[|^\s*[A-Za-z_-]+\s*=")
-    needles = (f'"{code}"', f"'{code}'")
-    for index, line in enumerate(lines):
-        if not start.match(line):
+    needles = (f'"{code}"', f"'{code}'") if code else ()
+    subtable = _header(text, f"{table}.{key}" if table else key)
+    if subtable:
+        region = _region(lines, subtable)
+        return next((n for n, line in region if any(x in line for x in needles)), subtable)
+    begin = _header(text, table) if table else 0
+    if table and not begin:
+        return _line(text, *(needles or (key,)))
+    assignment = re.compile(rf"^\s*{re.escape(key)}\s*=")
+    next_key = re.compile(r"^\s*[A-Za-z0-9_\"'-]+\s*=")
+    region = _region(lines, begin)
+    for index, (number, line) in enumerate(region):
+        if not assignment.match(line):
             continue
-        for offset, candidate in enumerate(lines[index:]):
-            if offset and stop.match(candidate):
+        if not needles:
+            return number
+        for offset, (candidate_number, candidate) in enumerate(region[index:]):
+            if offset and next_key.match(candidate):
                 break
             if any(needle in candidate for needle in needles):
-                return index + offset + 1
-    return _line(text, *needles)
+                return candidate_number
+        return number
+    return _line(text, *(needles or (key,)))
 
 
-def _ruff_sites(display: str, table: dict[str, Any], text: str) -> list[Site]:
+def _region(lines: list[str], header: int) -> list[tuple[int, str]]:
+    """Return (line number, text) for the lines after header (0: the top) up to the next one."""
+    region: list[tuple[int, str]] = []
+    for number, line in enumerate(lines[header:], header + 1):
+        if line.lstrip().startswith("["):
+            break
+        region.append((number, line))
+    return region
+
+
+def _ruff_sites(display: str, table: dict[str, Any], text: str, prefix: str) -> list[Site]:
     found: list[Site] = []
     lint = table.get("lint", {}) if isinstance(table.get("lint"), dict) else {}
-    for section in (table, lint):
+    lint_name = f"{prefix}.lint" if prefix else "lint"
+    for name, section in ((prefix, table), (lint_name, lint)):
         for key in ("ignore", "extend-ignore"):
             found.extend(
-                Site(display, _line_in(text, key, code), "ruff", (code,), key)
+                Site(display, _setting_line(text, name, key, code), "ruff", (code,), key)
                 for code in section.get(key, [])
             )
         for key in ("per-file-ignores", "extend-per-file-ignores"):
             for pattern, codes in section.get(key, {}).items():
                 found.extend(
-                    Site(display, _line_in(text, key, code), "ruff", (code,), f"{key} {pattern}")
+                    Site(
+                        display,
+                        _setting_line(text, name, key, code),
+                        "ruff",
+                        (code,),
+                        f"{key} {pattern}",
+                    )
                     for code in codes
                 )
         for key in ("exclude", "extend-exclude"):
             if section.get(key):
                 patterns = ", ".join(section[key])
-                found.append(Site(display, _line(text, key), "ruff", ("exclude",), patterns))
+                line = _setting_line(text, name, key)
+                found.append(Site(display, line, "ruff", ("exclude",), patterns))
     return found
 
 
