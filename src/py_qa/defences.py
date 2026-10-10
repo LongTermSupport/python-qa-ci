@@ -62,7 +62,7 @@ def active_defences(config: Config) -> list[Defence]:
         for identifier, (lane, summary) in BUILTIN.items()
         if config.tools[lane]
         and (lane != "summary" or config.summary_file)
-        and (lane != "coverage" or config.tools["test"])
+        and (lane != "coverage" or (config.tools["test"] and not config.test_command))
     ]
     if config.tools["pylint"]:
         defences.extend(

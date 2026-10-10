@@ -194,3 +194,61 @@ def test_test_lane_without_coverage(tmp_path: Path) -> None:
     write(tmp_path, "pyproject.toml", "[tool.py-qa.tools]\ncoverage = false\n")
     commands = lane_commands(load_config(tmp_path), paths=None, no_fix=True)
     assert commands["test"] == [[sys.executable, "-m", "pytest"]]
+
+
+def test_test_command_replaces_pytest_under_coverage(tmp_path: Path) -> None:
+    write(
+        tmp_path,
+        "pyproject.toml",
+        '[tool.py-qa.test]\ncommand = ["scripts/run_tests.sh", "--all"]\n',
+    )
+    commands = lane_commands(load_config(tmp_path), paths=None, no_fix=True)
+    assert commands["test"] == [["scripts/run_tests.sh", "--all"]]
+
+
+def test_lane_paths_override_paths_for_one_lane(tmp_path: Path) -> None:
+    for name in ("src", "tests", "scripts"):
+        (tmp_path / name).mkdir()
+        write(tmp_path, f"{name}/m.py", "x = 1\n")
+    write(
+        tmp_path,
+        "pyproject.toml",
+        '[tool.py-qa]\npaths = ["src", "tests", "scripts"]\n'
+        '[tool.py-qa.lane_paths]\nmypy = ["src", "scripts"]\n',
+    )
+    config = load_config(tmp_path)
+    commands = lane_commands(config, paths=None, no_fix=True)
+    assert commands["mypy"][0][-2:] == ["src", "scripts"]
+    assert commands["ruff"][0][-3:] == ["src", "tests", "scripts"]
+    assert commands["pylint"][0][-3:] == ["scripts/m.py", "src/m.py", "tests/m.py"]
+
+
+def test_lane_paths_narrow_a_subset_run_to_the_lanes_scope(tmp_path: Path) -> None:
+    for name in ("src", "tests"):
+        (tmp_path / name).mkdir()
+        write(tmp_path, f"{name}/m.py", "x = 1\n")
+    write(tmp_path, "pyproject.toml", '[tool.py-qa.lane_paths]\nmypy = ["src"]\n')
+    config = load_config(tmp_path)
+    whole = lane_commands(config, paths=(".",), no_fix=True)
+    assert whole["mypy"][0][-1] == "src"
+    assert whole["ruff"][0][-1] == "."
+    outside = lane_commands(config, paths=("tests/m.py",), no_fix=True)
+    assert outside["mypy"] == []
+    assert outside["ruff"][0][-1] == "tests/m.py"
+
+
+def test_pylint_runs_in_parallel(tmp_path: Path) -> None:
+    assert "--jobs=0" in pylint_args(load_config(tmp_path))
+
+
+@pytest.mark.parametrize(
+    ("environment", "reporter"),
+    [({}, "text"), ({"FORCE_COLOR": "1"}, "colorized"), ({"FORCE_COLOR": ""}, "text")],
+)
+def test_pylint_reporter_follows_force_color(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, environment: dict[str, str], reporter: str
+) -> None:
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    assert f"--output-format={reporter}" in pylint_args(load_config(tmp_path))

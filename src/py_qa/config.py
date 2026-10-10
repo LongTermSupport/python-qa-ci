@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -41,8 +41,12 @@ _TOP_KEYS = frozenset(
         "summary",
         "sensitive_repr",
         "formatter",
+        "test",
+        "lane_paths",
     }
 )
+# Lanes that read source and can be given paths of their own in [tool.py-qa.lane_paths].
+PATH_LANES = ("fmt", "ruff", "mypy", "pylint")
 _RECORD_KEYS = frozenset({"path", "max_total", "max_per_rule", "max_review_days"})
 
 
@@ -77,6 +81,12 @@ class Config:
     formatter: str
     sensitive_names: tuple[str, ...] | None
     redacting_types: tuple[str, ...] | None
+    test_command: tuple[str, ...] | None = None
+    lane_paths: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+    def paths_for(self, lane: str) -> tuple[str, ...]:
+        """Return the paths a lane reads: its own from lane_paths, or paths."""
+        return self.lane_paths.get(lane, self.paths)
 
     @property
     def record_path(self) -> Path:
@@ -130,7 +140,38 @@ def load_config(root: Path) -> Config:
         formatter=_formatter(table),
         sensitive_names=_strings(sensitive, "names", "[tool.py-qa.sensitive_repr]"),
         redacting_types=_strings(sensitive, "redacting_types", "[tool.py-qa.sensitive_repr]"),
+        test_command=_test_command(table),
+        lane_paths=_lane_paths(table),
     )
+
+
+def _test_command(table: dict[str, Any]) -> tuple[str, ...] | None:
+    test = _table(table.get("test", {}), "[tool.py-qa.test]")
+    _reject_unknown(test, {"command"}, "[tool.py-qa.test]")
+    command = test.get("command")
+    if command is None:
+        return None
+    if not isinstance(command, list) or not command or not all(isinstance(a, str) for a in command):
+        msg = "[tool.py-qa.test]: command must be a non-empty list of strings, run without a shell"
+        raise ConfigError(msg)
+    return tuple(command)
+
+
+def _lane_paths(table: dict[str, Any]) -> dict[str, tuple[str, ...]]:
+    where = "[tool.py-qa.lane_paths]"
+    lanes = _table(table.get("lane_paths", {}), where)
+    unknown = sorted(set(lanes) - set(PATH_LANES))
+    if unknown:
+        msg = f"{where}: unknown lane {', '.join(unknown)}; known: {', '.join(PATH_LANES)}"
+        raise ConfigError(msg)
+    resolved: dict[str, tuple[str, ...]] = {}
+    for lane in lanes:
+        paths = _strings(lanes, lane, where)
+        if not paths:
+            msg = f"{where}: {lane} must be a non-empty list of strings"
+            raise ConfigError(msg)
+        resolved[lane] = paths
+    return resolved
 
 
 def _record_policy(table: dict[str, Any]) -> RecordPolicy:

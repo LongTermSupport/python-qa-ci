@@ -1,6 +1,7 @@
 """Tests for the pipeline: lane selection, phase order, and stopping before runners."""
 
 import io
+import re
 from datetime import date
 from pathlib import Path
 
@@ -22,7 +23,7 @@ class FakeRunner:
     def __call__(self, command: list[str], cwd: Path) -> int:
         assert cwd.is_dir()
         self.calls.append(command)
-        return 1 if command[2] in self.failing else 0
+        return 1 if (command[2] if len(command) > 2 else command[-1]) in self.failing else 0
 
     def modules(self) -> list[str]:
         return [command[2] if command[2] != "coverage" else command[3] for command in self.calls]
@@ -136,3 +137,53 @@ def test_lanes_cover_every_switch_except_coverage() -> None:
     from py_qa.config import TOOLS
 
     assert set(LANES) == set(TOOLS) - {"coverage"}
+
+
+class Clock:
+    """A monotonic clock that advances 1.5 seconds each time it is read."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        self.now += 1.5
+        return self.now
+
+
+def test_summary_table_shows_each_lanes_duration(tmp_path: Path) -> None:
+    out = io.StringIO()
+    run_pipeline(
+        load_config(project(tmp_path)),
+        requested=("record", "mypy"),
+        paths=None,
+        no_fix=True,
+        fail_fast=False,
+        out=out,
+        runner=FakeRunner(),
+        today=TODAY,
+        clock=Clock(),
+    )
+    table = out.getvalue()
+    assert "PASS     record          1.5s" in table
+    assert "PASS     mypy            1.5s" in table
+    assert re.search(r"^ +total +7\.5s$", table, re.MULTILINE)
+
+
+def test_test_command_runs_in_place_of_pytest(tmp_path: Path) -> None:
+    root = project(tmp_path, '[tool.py-qa.test]\ncommand = ["scripts/qa.sh", "tests"]\n')
+    runner = FakeRunner(failing=("tests",))
+    code, output = run(root, runner, requested=("test",))
+    assert code == 1
+    assert runner.calls == [["scripts/qa.sh", "tests"]]
+    assert "py-qa: test failed: pyqaci.tests" in output
+
+
+def test_a_lane_with_nothing_in_scope_says_so(tmp_path: Path) -> None:
+    root = project(tmp_path, '[tool.py-qa.lane_paths]\nmypy = ["src"]\n')
+    (root / "tests").mkdir()
+    (root / "tests" / "t.py").write_text("x = 1\n", encoding="utf-8")
+    runner = FakeRunner()
+    code, output = run(root, runner, requested=("mypy",), paths=("tests/t.py",))
+    assert code == 0
+    assert runner.calls == []
+    assert "py-qa: mypy: nothing to check within this lane's paths" in output

@@ -110,3 +110,30 @@ def test_rejects_bad_configuration(tmp_path: Path, text: str, fragment: str) -> 
     write(tmp_path, text)
     with pytest.raises(ConfigError, match=fragment):
         load_config(tmp_path)
+
+
+def test_test_command_and_lane_paths(tmp_path: Path) -> None:
+    write(
+        tmp_path,
+        '[tool.py-qa.test]\ncommand = ["make", "test"]\n'
+        '[tool.py-qa.lane_paths]\nmypy = ["src"]\nfmt = ["."]\n',
+    )
+    config = load_config(tmp_path)
+    assert config.test_command == ("make", "test")
+    assert config.lane_paths == {"mypy": ("src",), "fmt": (".",)}
+
+
+@pytest.mark.parametrize(
+    ("text", "fragment"),
+    [
+        ("[tool.py-qa.test]\ncommand = []\n", "non-empty list of strings"),
+        ('[tool.py-qa.test]\ncommand = "make test"\n', "non-empty list of strings"),
+        ("[tool.py-qa.test]\nother = 1\n", "unknown key"),
+        ('[tool.py-qa.lane_paths]\ntest = ["src"]\n', "unknown lane test"),
+        ('[tool.py-qa.lane_paths]\nmypy = "src"\n', "list of strings"),
+    ],
+)
+def test_rejects_bad_test_and_lane_paths(tmp_path: Path, text: str, fragment: str) -> None:
+    write(tmp_path, text)
+    with pytest.raises(ConfigError, match=fragment):
+        load_config(tmp_path)

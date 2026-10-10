@@ -7,6 +7,7 @@ import contextlib
 import fnmatch
 import importlib
 import io
+import os
 import re
 import subprocess
 import sys
@@ -15,8 +16,8 @@ from importlib import metadata
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from py_qa.config import read_pyproject
-from py_qa.suppression import scope_files
+from py_qa.config import PATH_LANES, read_pyproject
+from py_qa.suppression import scope_files, within
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -116,7 +117,12 @@ def pylint_args(config: Config) -> list[str]:
         "--enable=" + ",".join(symbols),
         "--score=n",
         "--reports=n",
-        "--output-format=text",
+        # One worker per CPU: on a project of a few thousand files a single process is most of
+        # the run's time.
+        "--jobs=0",
+        # Pylint ignores an explicit text reporter when FORCE_COLOR is set, and warns that it
+        # did; asking for the reporter it will use keeps that warning out of the output.
+        "--output-format=" + ("colorized" if os.environ.get("FORCE_COLOR") else "text"),
     ]
     if config.sensitive_names is not None:
         args.append("--pyqaci-sensitive-names=" + ",".join(config.sensitive_names))
@@ -251,32 +257,57 @@ def lane_commands(
 ) -> dict[str, list[list[str]]]:
     """Return the commands each external lane runs, in order."""
     python = sys.executable
-    targets = list(paths or config.paths)
     check = ["--check", "--diff"] if no_fix else []
     ruff_config = ruff_config_args(config.root)
+    fmt, ruff, mypy, pylint = (lane_targets(config, lane, paths) for lane in PATH_LANES)
     return {
         "fmt": [
-            [python, "-m", "black", *check, *targets]
+            [python, "-m", "black", *check, *fmt]
             if config.formatter == "black"
-            else [python, "-m", "ruff", "format", *check, *ruff_config, *targets]
-        ],
-        "ruff": [
-            [
-                python,
-                "-m",
-                "ruff",
-                "check",
-                "--no-fix",
-                "--output-format=concise",
-                *ruff_config,
-                *targets,
-            ]
-        ],
-        "mypy": [[python, "-m", "mypy", *mypy_config_args(config.root), *targets]],
-        "pylint": pylint_commands(config, tuple(targets)),
-        "test": _test_commands(config),
+            else [python, "-m", "ruff", "format", *check, *ruff_config, *fmt]
+        ]
+        if fmt
+        else [],
+        "ruff": [ruff_check_command(config, ruff)] if ruff else [],
+        "mypy": [[python, "-m", "mypy", *mypy_config_args(config.root), *mypy]] if mypy else [],
+        "pylint": pylint_commands(config, tuple(pylint)),
+        "test": [list(config.test_command)] if config.test_command else _test_commands(config),
         "audit": [[python, "-m", "pip_audit", "--progress-spinner=off"]],
     }
+
+
+def ruff_check_command(config: Config, targets: list[str] | tuple[str, ...]) -> list[str]:
+    """Return the Ruff check command over targets, with the configuration in force."""
+    return [
+        sys.executable,
+        "-m",
+        "ruff",
+        "check",
+        "--no-fix",
+        "--output-format=concise",
+        *ruff_config_args(config.root),
+        *targets,
+    ]
+
+
+def lane_targets(config: Config, lane: str, paths: tuple[str, ...] | None) -> list[str]:
+    """Return what a source lane is given: its paths, or the part of a -p subset within them.
+
+    A -p path inside the lane's paths is kept; a lane path inside a -p path (such as `src`
+    under `-p .`) is taken instead, so a subset never widens a lane beyond its own paths.
+    """
+    scope = config.paths_for(lane)
+    if paths is None:
+        return list(scope)
+    if lane not in config.lane_paths:
+        return list(paths)
+    picked: list[str] = []
+    for path in paths:
+        inside = [path] if any(within(path, own) for own in scope) else []
+        for candidate in inside or [own for own in scope if within(own, path)]:
+            if candidate not in picked:
+                picked.append(candidate)
+    return picked
 
 
 def lane_tool(config: Config, lane: str) -> str:
@@ -284,6 +315,8 @@ def lane_tool(config: Config, lane: str) -> str:
     if lane in {"record", "suppression", "summary", "docs"}:
         return "py-qa"
     if lane == "test":
+        if config.test_command:
+            return " ".join(config.test_command)
         pytest = _versioned("pytest")
         return f"{pytest} under {_versioned('coverage')}" if config.tools["coverage"] else pytest
     if lane == "fmt":
