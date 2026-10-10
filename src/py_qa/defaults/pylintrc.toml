@@ -1,0 +1,6 @@
+# py-qa runs Pylint as the host for bespoke rules, always with this file, so a project's own
+# [tool.pylint] or .pylintrc is not read. Which messages run is set on the command line: the
+# bundled plugin's, the project's plugins' (pylint_plugins) and any named in pylint_enable.
+[tool.pylint.main]
+ignore = [".git", ".venv", "venv", ".tox", ".nox", "build", "dist", "node_modules", "__pycache__"]
+recursive = true

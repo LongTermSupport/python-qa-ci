@@ -1,4 +1,4 @@
-# python-qa-ci runs its own pipeline on itself: the bundled Pylint defences, the suppression
+# py-qa-ci runs its own pipeline on itself: the bundled Pylint defences, the suppression
 # scan, the record and the documentation check all run on this source exactly as they run in a
 # consuming project. CI is set, so the formatter checks rather than fixes.
 name: CI
@@ -33,5 +33,5 @@ jobs:
         run: |
           python -m pip install uv==0.12.24
           uv sync --locked --python "$(command -v python)"
-      - name: python-qa run
-        run: uv run python-qa run
+      - name: py-qa run
+        run: uv run py-qa run
