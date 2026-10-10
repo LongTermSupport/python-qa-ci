@@ -20,7 +20,7 @@ from py_qa.docs import check_docs, resolve
 from py_qa.pipeline import LANES, METHOD_LINE, UsageError, run_pipeline, suppression_findings
 from py_qa.record import RecordEntry, check_record, load_record
 from py_qa.summary import check_summary, write_summary
-from py_qa.tools import lane_commands, pylint_commands, pylint_messages
+from py_qa.tools import lane_commands, lane_tool, pylint_commands, pylint_messages
 
 if TYPE_CHECKING:
     from py_qa.config import Config
@@ -240,11 +240,9 @@ def _summary(config: Config, *, check: bool) -> int:
 
 
 def _tools(config: Config) -> int:
-    commands = lane_commands(config, paths=None, no_fix=True)
     for lane in LANES:
         state = "on" if config.tools[lane] else "off"
         if lane == "summary" and config.summary_file is None:
             state = "off (no summary file)"
-        what = " ".join(commands[lane][0][2:4]) if commands.get(lane) else "py-qa"
-        sys.stdout.write(f"{lane:12} {state:22} {what}\n")
+        sys.stdout.write(f"{lane:12} {state:22} {lane_tool(config, lane)}\n")
     return 0

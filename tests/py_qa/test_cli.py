@@ -2,6 +2,7 @@
 
 import json
 from datetime import UTC, datetime, timedelta
+from importlib.metadata import version
 from pathlib import Path
 
 import pytest
@@ -130,3 +131,18 @@ def test_tools_lists_lanes(root: Path, capsys: pytest.CaptureFixture[str]) -> No
     assert "ruff" in out
     assert "audit" in out
     assert "off" in out
+
+
+def test_tools_names_the_tool_behind_each_lane_not_its_arguments(
+    root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["tools"]) == 0
+    lanes = {line.split()[0]: line for line in capsys.readouterr().out.splitlines()}
+    assert lanes["fmt"].endswith(f"ruff format {version('ruff')}")
+    assert lanes["mypy"].endswith(f"mypy {version('mypy')}")
+    assert lanes["pylint"].endswith(f"pylint {version('pylint')}")
+    assert "pytest" in lanes["test"]
+    assert "coverage" in lanes["test"]
+    assert "--rcfile" not in lanes["pylint"]
+    assert "src" not in lanes["mypy"]
+    assert lanes["record"].endswith("py-qa")

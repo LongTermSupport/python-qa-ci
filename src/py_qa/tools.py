@@ -11,6 +11,7 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass
+from importlib import metadata
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -276,6 +277,27 @@ def lane_commands(
         "test": _test_commands(config),
         "audit": [[python, "-m", "pip_audit", "--progress-spinner=off"]],
     }
+
+
+def lane_tool(config: Config, lane: str) -> str:
+    """Return the tool behind a lane, with its installed version, for `py-qa tools`."""
+    if lane in {"record", "suppression", "summary", "docs"}:
+        return "py-qa"
+    if lane == "test":
+        pytest = _versioned("pytest")
+        return f"{pytest} under {_versioned('coverage')}" if config.tools["coverage"] else pytest
+    if lane == "fmt":
+        return _versioned("black") if config.formatter == "black" else _versioned("ruff", "format")
+    names = {"ruff": ("ruff", "check"), "audit": ("pip-audit",)}
+    return _versioned(*names.get(lane, (lane,)))
+
+
+def _versioned(distribution: str, subcommand: str = "") -> str:
+    name = f"{distribution} {subcommand}" if subcommand else distribution
+    try:
+        return f"{name} {metadata.version(distribution)}"
+    except metadata.PackageNotFoundError:
+        return f"{name} (not installed)"
 
 
 def pylint_commands(
