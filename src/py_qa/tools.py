@@ -260,24 +260,62 @@ def lane_commands(
     check = ["--check", "--diff"] if no_fix else []
     ruff_config = ruff_config_args(config.root)
     fmt, ruff, mypy, pylint = (lane_targets(config, lane, paths) for lane in PATH_LANES)
+    if config.formatter == "black":
+        # Black writes its cache only when it is not printing a diff, so checking with --diff
+        # re-reads every file on every run; the diff is printed by format_diff_command instead.
+        black_check = ["--check"] if no_fix else []
+        formatting = [python, "-m", "black", *black_check, *black_exclude_args(config.root), *fmt]
+    else:
+        formatting = [python, "-m", "ruff", "format", *check, "--force-exclude", *ruff_config, *fmt]
     return {
-        "fmt": [
-            [python, "-m", "black", *check, *fmt]
-            if config.formatter == "black"
-            else [python, "-m", "ruff", "format", *check, *ruff_config, *fmt]
-        ]
-        if fmt
-        else [],
+        "fmt": [formatting] if fmt else [],
         "ruff": [ruff_check_command(config, ruff)] if ruff else [],
         "mypy": [[python, "-m", "mypy", *mypy_config_args(config.root), *mypy]] if mypy else [],
         "pylint": pylint_commands(config, tuple(pylint)),
-        "test": [list(config.test_command)] if config.test_command else _test_commands(config),
+        "test": test_commands(config),
         "audit": [[python, "-m", "pip_audit", "--progress-spinner=off"]],
     }
 
 
+def format_diff_command(config: Config, targets: list[str]) -> list[str] | None:
+    """Return the command that prints Black's diff after a failed check, or None for Ruff.
+
+    Ruff's check already prints its diff; Black's is printed apart from its check, because Black
+    does not use its cache while printing one.
+    """
+    if config.formatter != "black" or not targets:
+        return None
+    return [sys.executable, "-m", "black", "--diff", *black_exclude_args(config.root), *targets]
+
+
+def black_exclude_args(root: Path) -> list[str]:
+    """Return --force-exclude carrying the project's Black exclusions, or nothing.
+
+    Black applies its exclude settings only to files it finds in a directory, not to a file
+    named on the command line, as a diff run and -p name them; --force-exclude applies them to
+    both.
+    """
+    black = read_pyproject(root).get("tool", {}).get("black", {})
+    patterns = [
+        black[key]
+        for key in ("force-exclude", "extend-exclude", "exclude")
+        if isinstance(black.get(key), str) and black[key].strip()
+    ]
+    if not patterns:
+        return []
+    if len(patterns) == 1:
+        return ["--force-exclude", patterns[0]]
+    # Black reads a pattern holding a newline as verbose, so the union of several is verbose
+    # when any one is.
+    return ["--force-exclude", "|".join(f"(?:{pattern})" for pattern in patterns)]
+
+
 def ruff_check_command(config: Config, targets: list[str] | tuple[str, ...]) -> list[str]:
-    """Return the Ruff check command over targets, with the configuration in force."""
+    """Return the Ruff check command over targets, with the configuration in force.
+
+    --force-exclude keeps Ruff's exclusions in force for a file named on the command line, as a
+    diff run and -p name them.
+    """
     return [
         sys.executable,
         "-m",
@@ -285,6 +323,7 @@ def ruff_check_command(config: Config, targets: list[str] | tuple[str, ...]) -> 
         "check",
         "--no-fix",
         "--output-format=concise",
+        "--force-exclude",
         *ruff_config_args(config.root),
         *targets,
     ]
@@ -314,6 +353,9 @@ def lane_tool(config: Config, lane: str) -> str:
     """Return the tool behind a lane, with its installed version, for `py-qa tools`."""
     if lane in {"record", "suppression", "summary", "docs"}:
         return "py-qa"
+    check = next((check for check in config.checks if check.name == lane), None)
+    if check is not None:
+        return f"project check: {' '.join(check.command)}"
     if lane == "test":
         if config.test_command:
             return " ".join(config.test_command)
@@ -354,7 +396,10 @@ def pylint_commands(
     return [[sys.executable, "-m", "pylint", *args, "--", *files]]
 
 
-def _test_commands(config: Config) -> list[list[str]]:
+def test_commands(config: Config) -> list[list[str]]:
+    """Return the full test lane: the project's own test command, or pytest under coverage."""
+    if config.test_command:
+        return [list(config.test_command)]
     python = sys.executable
     if not config.tools["coverage"]:
         return [[python, "-m", "pytest"]]

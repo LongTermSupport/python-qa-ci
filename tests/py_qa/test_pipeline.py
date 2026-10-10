@@ -97,7 +97,7 @@ def test_builtin_findings_fail_the_suppression_lane(tmp_path: Path) -> None:
 
 def test_unreadable_file_is_reported_not_skipped(tmp_path: Path) -> None:
     root = project(tmp_path)
-    (root / "src" / "broken.py").write_text('x = """\n', encoding="utf-8")
+    (root / "src" / "broken.py").write_text('x = """  # type: ' + "ignore\n", encoding="utf-8")
     code, output = run(root, FakeRunner(), requested=("suppression",))
     assert code == 1
     assert "src/broken.py: pyqaci.suppression.unscanned" in output

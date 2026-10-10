@@ -1,5 +1,6 @@
 """Tests for reading [tool.py-qa] from pyproject.toml."""
 
+import re
 from pathlib import Path
 
 import pytest
@@ -136,4 +137,160 @@ def test_test_command_and_lane_paths(tmp_path: Path) -> None:
 def test_rejects_bad_test_and_lane_paths(tmp_path: Path, text: str, fragment: str) -> None:
     write(tmp_path, text)
     with pytest.raises(ConfigError, match=fragment):
+        load_config(tmp_path)
+
+
+def test_project_checks(tmp_path: Path) -> None:
+    write(
+        tmp_path,
+        """
+[[tool.py-qa.check]]
+name = "spelling"
+command = ["{python}", "scripts/spelling.py"]
+description = "Prose is written in British English."
+doc = "scripts/spelling.py"
+paths = ["**/*.md"]
+diff_command = ["{python}", "scripts/spelling.py", "{files}"]
+
+[[tool.py-qa.check]]
+name = "smoke"
+command = ["scripts/smoke.sh"]
+description = "The installed command answers."
+doc = "docs/smoke.md"
+phase = "runners"
+diff = false
+""",
+    )
+    spelling, smoke = load_config(tmp_path).checks
+    assert spelling.name == "spelling"
+    assert spelling.command == ("{python}", "scripts/spelling.py")
+    assert spelling.phase == "detectors"
+    assert spelling.paths == ("**/*.md",)
+    assert spelling.diff_command == ("{python}", "scripts/spelling.py", "{files}")
+    assert smoke.phase == "runners"
+    assert smoke.paths is None
+    assert smoke.diff_command is None
+    assert spelling.in_diff
+    assert not smoke.in_diff
+
+
+CHECK = 'name = "x"\ncommand = ["x"]\ndescription = "X holds."\ndoc = "x.md"\n'
+
+
+@pytest.mark.parametrize(
+    ("text", "fragment"),
+    [
+        ("[tool.py-qa]\ncheck = 1\n", "array of tables"),
+        ("[[tool.py-qa.check]]\n" + CHECK + "other = 1\n", "unknown key other"),
+        ("[[tool.py-qa.check]]\n" + CHECK.replace('"x"\ncommand', '"Bad Name"\ncommand'), "name"),
+        ("[[tool.py-qa.check]]\n" + CHECK.replace('["x"]', "[]"), "non-empty list"),
+        ("[[tool.py-qa.check]]\n" + CHECK.replace('description = "X holds."\n', ""), "description"),
+        ("[[tool.py-qa.check]]\n" + CHECK.replace('doc = "x.md"\n', ""), "doc"),
+        ("[[tool.py-qa.check]]\n" + CHECK + 'phase = "format"\n', "phase must be"),
+        ("[[tool.py-qa.check]]\n" + CHECK + "paths = []\n", "paths"),
+        ("[[tool.py-qa.check]]\n" + CHECK + 'diff = "no"\n', "diff must be"),
+        ("[[tool.py-qa.check]]\n" + CHECK.replace('"x"\ncommand', '"ruff"\ncommand'), "lane"),
+        ("[[tool.py-qa.check]]\n" + CHECK + "[[tool.py-qa.check]]\n" + CHECK, "twice"),
+        ("[[tool.py-qa.check]]\n" + CHECK + 'diff_command = ["x", "{nope}"]\n', "{nope}"),
+    ],
+)
+def test_rejects_bad_project_checks(tmp_path: Path, text: str, fragment: str) -> None:
+    write(tmp_path, text)
+    with pytest.raises(ConfigError, match=re.escape(fragment)):
+        load_config(tmp_path)
+
+
+def test_diff_policy_defaults_and_keys(tmp_path: Path) -> None:
+    write(tmp_path, "")
+    default = load_config(tmp_path).diff
+    assert default.base is None
+    assert default.unmapped == "full"
+    assert "pyproject.toml" in default.full_tests_on
+    write(
+        tmp_path,
+        """
+[tool.py-qa.diff]
+base = "origin/develop"
+unmapped = "ignore"
+full_tests_on = ["setup.py"]
+
+[[tool.py-qa.diff.map]]
+glob = "docs/**/*.md"
+tests = ["tests/test_docs.py"]
+
+[[tool.py-qa.diff.map]]
+glob = "*.txt"
+tests = []
+""",
+    )
+    diff = load_config(tmp_path).diff
+    assert diff.base == "origin/develop"
+    assert diff.unmapped == "ignore"
+    assert diff.full_tests_on == ("setup.py",)
+    assert [(entry.glob, entry.tests) for entry in diff.map] == [
+        ("docs/**/*.md", ("tests/test_docs.py",)),
+        ("*.txt", ()),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("text", "fragment"),
+    [
+        ("[tool.py-qa.diff]\nother = 1\n", "unknown key"),
+        ('[tool.py-qa.diff]\nunmapped = "fail"\n', "unmapped must be"),
+        ("[[tool.py-qa.diff.map]]\ntests = []\n", "glob"),
+        ('[[tool.py-qa.diff.map]]\nglob = "x"\n', "tests"),
+        ('[[tool.py-qa.diff.map]]\nglob = "x"\ntests = []\nwhy = 3\n', "why"),
+    ],
+)
+def test_rejects_bad_diff_policy(tmp_path: Path, text: str, fragment: str) -> None:
+    write(tmp_path, text)
+    with pytest.raises(ConfigError, match=re.escape(fragment)):
+        load_config(tmp_path)
+
+
+def test_test_diff_command_setup_lock_and_rule_doc_command(tmp_path: Path) -> None:
+    write(tmp_path, "")
+    config = load_config(tmp_path)
+    assert config.test_diff_command is None
+    assert config.test_setup == ()
+    assert config.lock is True
+    assert config.lock_path is None
+    assert config.rule_doc_command is None
+    write(
+        tmp_path,
+        """
+[tool.py-qa]
+lock = "untracked/qa.lock"
+rule_doc_command = ["scripts/explain.py", "{identifier}"]
+
+[tool.py-qa.test]
+command = ["scripts/test.sh"]
+diff_command = ["scripts/test.sh", "{tests}"]
+setup = [["scripts/start-db.sh"], ["scripts/seed.sh", "--quick"]]
+""",
+    )
+    config = load_config(tmp_path)
+    assert config.test_diff_command == ("scripts/test.sh", "{tests}")
+    assert config.test_setup == (("scripts/start-db.sh",), ("scripts/seed.sh", "--quick"))
+    assert config.lock is True
+    assert config.lock_path == "untracked/qa.lock"
+    assert config.rule_doc_command == ("scripts/explain.py", "{identifier}")
+    write(tmp_path, "[tool.py-qa]\nlock = false\n")
+    assert load_config(tmp_path).lock is False
+
+
+@pytest.mark.parametrize(
+    ("text", "fragment"),
+    [
+        ("[tool.py-qa]\nlock = 3\n", "lock must be"),
+        ('[tool.py-qa]\nrule_doc_command = ["x"]\n', "{identifier}"),
+        ('[tool.py-qa.test]\ndiff_command = ["pytest"]\n', "{tests}"),
+        ("[tool.py-qa.test]\nsetup = [[]]\n", "setup"),
+        ('[tool.py-qa.test]\nsetup = ["x"]\n', "setup"),
+    ],
+)
+def test_rejects_bad_test_lock_and_rule_doc(tmp_path: Path, text: str, fragment: str) -> None:
+    write(tmp_path, text)
+    with pytest.raises(ConfigError, match=re.escape(fragment)):
         load_config(tmp_path)

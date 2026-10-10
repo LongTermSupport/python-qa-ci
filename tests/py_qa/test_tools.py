@@ -8,6 +8,8 @@ import pytest
 from py_qa.config import load_config
 from py_qa.tools import (
     DEFAULTS,
+    black_exclude_args,
+    format_diff_command,
     lane_commands,
     mypy_config_args,
     mypy_enabled_codes,
@@ -147,6 +149,7 @@ def test_lane_commands(tmp_path: Path) -> None:
             "format",
             "--check",
             "--diff",
+            "--force-exclude",
             *ruff_config_args(tmp_path),
             "src",
             "tests",
@@ -160,7 +163,7 @@ def test_lane_commands(tmp_path: Path) -> None:
     ]
     fixing = lane_commands(config, paths=("src/a.py",), no_fix=False)
     assert fixing["fmt"] == [
-        [python, "-m", "ruff", "format", *ruff_config_args(tmp_path), "src/a.py"]
+        [python, "-m", "ruff", "format", "--force-exclude", *ruff_config_args(tmp_path), "src/a.py"]
     ]
 
 
@@ -186,8 +189,32 @@ def test_black_formatter(tmp_path: Path) -> None:
     config = load_config(tmp_path)
     checking = lane_commands(config, paths=None, no_fix=True)["fmt"]
     fixing = lane_commands(config, paths=None, no_fix=False)["fmt"]
-    assert checking == [[sys.executable, "-m", "black", "--check", "--diff", "pkg"]]
+    assert checking == [[sys.executable, "-m", "black", "--check", "pkg"]]
     assert fixing == [[sys.executable, "-m", "black", "pkg"]]
+    assert format_diff_command(config, ["pkg"]) == [sys.executable, "-m", "black", "--diff", "pkg"]
+    assert format_diff_command(config, []) is None
+
+
+def test_black_exclusions_hold_for_files_named_on_the_command_line(tmp_path: Path) -> None:
+    write(
+        tmp_path,
+        "pyproject.toml",
+        '[tool.py-qa]\nformatter = "black"\n[tool.black]\nextend-exclude = "fixtures/"\n',
+    )
+    config = load_config(tmp_path)
+    assert lane_commands(config, paths=("a.py",), no_fix=True)["fmt"] == [
+        [sys.executable, "-m", "black", "--check", "--force-exclude", "fixtures/", "a.py"]
+    ]
+    write(
+        tmp_path,
+        "pyproject.toml",
+        '[tool.black]\nexclude = "build/"\nextend-exclude = """\n/(\n  gen\n)/\n"""\n',
+    )
+    assert black_exclude_args(tmp_path) == ["--force-exclude", "(?:/(\n  gen\n)/\n)|(?:build/)"]
+
+
+def test_ruff_format_is_not_given_a_diff_command(tmp_path: Path) -> None:
+    assert format_diff_command(load_config(tmp_path), ["a.py"]) is None
 
 
 def test_test_lane_without_coverage(tmp_path: Path) -> None:

@@ -64,6 +64,9 @@ def active_defences(config: Config) -> list[Defence]:
         and (lane != "summary" or config.summary_file)
         and (lane != "coverage" or (config.tools["test"] and not config.test_command))
     ]
+    defences.extend(
+        Defence(check.name, "check", "project", check.description) for check in config.checks
+    )
     if config.tools["pylint"]:
         defences.extend(
             Defence(message.symbol, "pylint", message.origin, message.summary)

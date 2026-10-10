@@ -89,7 +89,12 @@ def test_comment_forms(text: str, expected: list[tuple[int, str, tuple[str, ...]
 
 def test_unparseable_source_raises() -> None:
     with pytest.raises(SyntaxError):
-        comment_sites("a.py", 'x = """\n')
+        comment_sites("a.py", 'x = """  # no' + "qa\n")
+
+
+def test_source_with_no_directive_word_is_not_tokenized() -> None:
+    # Unparseable, but nothing in it could be a directive, so there is nothing to scan for.
+    assert comment_sites("a.py", 'x = """\n') == []
 
 
 def write(root: Path, name: str, text: str) -> None:

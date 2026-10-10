@@ -12,6 +12,7 @@ DEFENCES = [
     Defence("pyqaci.tests", "py-qa", "bundled", "The test suite passes."),
     Defence("pyqaci-broad-suppress", "pylint", "bundled", "Name the exceptions."),
     Defence("proj-no-eval", "pylint", "project", "Do not call eval."),
+    Defence("spelling", "check", "project", "Prose is in British English."),
     Defence("F401", "ruff", "ruff", "unused-import"),
     Defence("arg-type", "mypy", "mypy", "Check argument types in calls"),
 ]
@@ -27,6 +28,7 @@ def test_render_lists_bespoke_defences_and_counts_the_catalogues(tmp_path: Path)
     assert "`py-qa rule-doc pyqaci-broad-suppress`" in region
     assert "- `proj-no-eval` (Pylint, project): Do not call eval." in region
     assert "- `pyqaci.tests` (py-qa): The test suite passes." in region
+    assert "- `spelling` (project check): Prose is in British English. Docs: " in region
     assert "1 Ruff rules and 1 mypy error codes also block" in region
     assert "1 exception in `qa/record.toml`" in region
     assert "F401" not in region
