@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import configparser
 import fnmatch
+import functools
 import io
 import re
 import subprocess
@@ -78,6 +79,8 @@ _MYPY = re.compile(r"#\s*mypy\s*:\s*(.*)")
 _PYRIGHT_IGNORE = re.compile(r"#\s*pyright\s*:\s*ignore(?:\[([^\]]*)\])?")
 _PYRIGHT = re.compile(r"#\s*pyright\s*:\s*(.*)")
 _NOSEC = re.compile(r"#\s*nosec\b(?:\s*:?\s*([A-Z][0-9]+(?:[\s,]+[A-Z][0-9]+)*))?")
+# coverage.py's own default exclusion pattern, and the branch form beside it.
+_COVERAGE = re.compile(r"#\s*pragma[:\s]?\s*no\s*(cover|branch)\b", re.IGNORECASE)
 _NOSEMGREP = re.compile(r"#\s*nosemgrep\b(?:\s*:\s*([\w.\-]+(?:\s*,\s*[\w.\-]+)*))?")
 
 # A file-level mypy setting relaxes a check when it allows, ignores or turns a warning off.
@@ -115,6 +118,8 @@ def _directives(segment: str) -> list[tuple[str, tuple[str, ...]]]:
         return [("bandit", _split(match.group(1)))]
     if match := _NOSEMGREP.match(segment):
         return [("semgrep", _split(match.group(1), r"\s*,\s*"))]
+    if match := _COVERAGE.match(segment):
+        return [("coverage", (f"no-{match.group(1).lower()}",))]
     return []
 
 
@@ -175,13 +180,63 @@ def config_sites(root: Path) -> list[Site]:
             found.extend(_ruff_sites(name, _toml(path), _text(path)))
     if isinstance(tool.get("mypy"), dict):
         mypy = tool["mypy"]
-        sections = [mypy, *[o for o in mypy.get("overrides", []) if isinstance(o, dict)]]
-        for section in sections:
-            found.extend(_mypy_sites("pyproject.toml", section, text))
+        found.extend(_mypy_sites("pyproject.toml", mypy, mypy, text, _header(text, "tool.mypy")))
+        overrides = [o for o in mypy.get("overrides", []) if isinstance(o, dict)]
+        headers = _headers(text, "[[tool.mypy.overrides]]")
+        for index, section in enumerate(overrides):
+            start = headers[index] if index < len(headers) else 0
+            found.extend(_mypy_sites("pyproject.toml", section, mypy, text, start))
     for name in ("mypy.ini", ".mypy.ini", "setup.cfg"):
         path = root / name
         if path.is_file():
             found.extend(_mypy_ini_sites(name, path))
+    coverage = tool.get("coverage")
+    if isinstance(coverage, dict):
+        for part in ("run", "report"):
+            start = _header(text, f"tool.coverage.{part}")
+            found.extend(_coverage_sites("pyproject.toml", coverage.get(part), text, start))
+    for name, prefix in ((".coveragerc", ""), ("setup.cfg", "coverage:"), ("tox.ini", "coverage:")):
+        path = root / name
+        if path.is_file():
+            found.extend(_coverage_ini_sites(name, path, prefix))
+    return found
+
+
+# Settings that take lines or files out of coverage.py's measurement, so the coverage floor is
+# met by measuring less rather than testing more.
+_COVERAGE_KEYS = ("omit", "exclude_lines", "exclude_also", "partial_branches")
+
+
+def _coverage_sites(display: str, table: object, text: str, start: int) -> list[Site]:
+    if not isinstance(table, dict):
+        return []
+    return [
+        Site(display, _key_line(text, start, key), "coverage", (key,), _patterns(table[key]))
+        for key in _COVERAGE_KEYS
+        if table.get(key)
+    ]
+
+
+def _patterns(value: object) -> str:
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value)
+    return " ".join(str(value).split())
+
+
+def _coverage_ini_sites(display: str, path: Path, prefix: str) -> list[Site]:
+    parser = configparser.ConfigParser()
+    try:
+        parser.read_string(path.read_text(encoding="utf-8"))
+    except configparser.Error as error:
+        msg = f"{display}: cannot parse: {error}"
+        raise ConfigError(msg) from error
+    text = _text(path)
+    found: list[Site] = []
+    for section in ("run", "report"):
+        name = prefix + section
+        if parser.has_section(name):
+            table = {key: parser[name][key] for key in _COVERAGE_KEYS if key in parser[name]}
+            found.extend(_coverage_sites(display, table, text, _header(text, name)))
     return found
 
 
@@ -250,27 +305,108 @@ def _ruff_sites(display: str, table: dict[str, Any], text: str) -> list[Site]:
     return found
 
 
-def _mypy_sites(display: str, section: dict[str, Any], text: str) -> list[Site]:
+def _headers(text: str, header: str) -> list[int]:
+    return [n for n, line in enumerate(text.splitlines(), 1) if line.strip() == header]
+
+
+def _header(text: str, table: str) -> int:
+    found = _headers(text, f"[{table}]")
+    return found[0] if found else 0
+
+
+def _key_line(text: str, start: int, key: str) -> int:
+    """Return the line of key inside the table whose header is at start, or its first mention."""
+    if start:
+        assignment = re.compile(rf"^\s*{re.escape(key)}\s*=")
+        for number, line in enumerate(text.splitlines()[start:], start + 1):
+            if line.lstrip().startswith("["):
+                break
+            if assignment.match(line):
+                return number
+    return _line(text, key)
+
+
+# Flags mypy's own strictness is made of, and the value that loosens each: the flags --strict
+# sets (read from the installed mypy), the rest of the warn_ and disallow_ families, and the
+# flags that loosen when switched on.
+_LOOSENED_BY_TRUE = frozenset(
+    {"allow_untyped_globals", "allow_redefinition", "allow_empty_bodies", "implicit_optional"}
+)
+_TIGHTENING = frozenset({"check_untyped_defs", "extra_checks", "local_partial_types"})
+
+
+@functools.cache
+def _strict_values() -> dict[str, bool]:
+    from mypy.main import define_options  # deferred: mypy is only needed for its own flags
+
+    return dict(define_options()[2])
+
+
+def _loosening_value(key: str, strict: dict[str, bool]) -> bool | None:
+    if key in strict:
+        return not strict[key]
+    if key in _LOOSENED_BY_TRUE:
+        return True
+    if key.startswith(("warn_", "disallow_", "strict_")) or key in _TIGHTENING:
+        return False
+    return None
+
+
+def _relaxed_flags(section: dict[str, Any], whole: dict[str, Any]) -> list[str]:
+    """Return the strictness flags section turns off, against what is otherwise in force.
+
+    A flag at mypy's default is not a relaxation: `warn_return_any = false` relaxes only where
+    strict, or the global section, had turned it on. In the global section itself (section is
+    whole), only strict is what was in force.
+    """
+    strict_values = _strict_values()
+    strict = _boolean(whole.get("strict")) is True
+    relaxed: list[str] = []
+    for key, raw in section.items():
+        value, loose = _boolean(raw), _loosening_value(key, strict_values)
+        if loose is None or value is not loose:
+            continue
+        baseline = _boolean(whole.get(key)) if section is not whole else None
+        if baseline is None and strict and key in strict_values:
+            baseline = strict_values[key]
+        if baseline is (not loose) or (baseline is None and key in _LOOSENED_BY_TRUE):
+            relaxed.append(key)
+    return relaxed
+
+
+def _boolean(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lower() in configparser.ConfigParser.BOOLEAN_STATES:
+        return configparser.ConfigParser.BOOLEAN_STATES[value.strip().lower()]
+    return None
+
+
+def _mypy_sites(
+    display: str, section: dict[str, Any], whole: dict[str, Any], text: str, start: int
+) -> list[Site]:
     found: list[Site] = []
     codes = section.get("disable_error_code", [])
     if isinstance(codes, str):
         codes = _split(codes, r"\s*,\s*")
-    found.extend(
-        Site(display, _line(text, "disable_error_code"), "mypy", (code,), "disable_error_code")
-        for code in codes
-    )
+    line = _key_line(text, start, "disable_error_code")
+    found.extend(Site(display, line, "mypy", (code,), "disable_error_code") for code in codes)
     module = str(section.get("module", "every module"))
     found.extend(
-        Site(display, _line(text, key), "mypy", (key,), module)
+        Site(display, _key_line(text, start, key), "mypy", (key,), module)
         for key in ("ignore_errors", "ignore_missing_imports")
-        if section.get(key) is True
+        if _boolean(section.get(key)) is True
     )
     if section.get("exclude"):
-        found.append(Site(display, _line(text, "exclude"), "mypy", ("exclude",), "exclude"))
+        line = _key_line(text, start, "exclude")
+        found.append(Site(display, line, "mypy", ("exclude",), "exclude"))
     if section.get("follow_imports") in {"skip", "silent"}:
-        found.append(
-            Site(display, _line(text, "follow_imports"), "mypy", ("follow_imports",), module)
-        )
+        line = _key_line(text, start, "follow_imports")
+        found.append(Site(display, line, "mypy", ("follow_imports",), module))
+    found.extend(
+        Site(display, _key_line(text, start, key), "mypy", (key,), module)
+        for key in _relaxed_flags(section, whole)
+    )
     return found
 
 
@@ -283,18 +419,14 @@ def _mypy_ini_sites(display: str, path: Path) -> list[Site]:
         raise ConfigError(msg) from error
     text = _text(path)
     found: list[Site] = []
+    whole = dict(parser["mypy"]) if parser.has_section("mypy") else {}
     for name in parser.sections():
         if name != "mypy" and not name.startswith("mypy-"):
             continue
-        section = parser[name]
-        converted: dict[str, Any] = {"module": name.removeprefix("mypy-")}
-        for key in ("ignore_errors", "ignore_missing_imports"):
-            if key in section:
-                converted[key] = section.getboolean(key)
-        for key in ("disable_error_code", "exclude", "follow_imports"):
-            if key in section:
-                converted[key] = section[key]
-        found.extend(_mypy_sites(display, converted, text))
+        section = whole if name == "mypy" else dict(parser[name])
+        if name != "mypy":
+            section["module"] = name.removeprefix("mypy-")
+        found.extend(_mypy_sites(display, section, whole, text, _header(text, name)))
     return found
 
 

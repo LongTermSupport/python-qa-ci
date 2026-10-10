@@ -146,6 +146,8 @@ def _rules(config: Config, *, as_json: bool) -> int:
                 for entry in entries
             ],
             "scan_exclude": list(config.scan_exclude),
+            "paths": list(config.paths),
+            "lane_paths": {lane: list(paths) for lane, paths in config.lane_paths.items()},
         }
         sys.stdout.write(json.dumps(data, indent=2) + "\n")
         return 0
@@ -161,6 +163,13 @@ def _rules(config: Config, *, as_json: bool) -> int:
     if config.scan_exclude:
         sys.stdout.write("\nExcluded from the suppression scan and the bundled Pylint pass:\n")
         sys.stdout.writelines(f"  {pattern}\n" for pattern in config.scan_exclude)
+    if config.lane_paths:
+        sys.stdout.write(
+            f"\nLanes given paths of their own, in place of paths ({', '.join(config.paths)}):\n"
+        )
+        sys.stdout.writelines(
+            f"  {lane}: {', '.join(paths)}\n" for lane, paths in config.lane_paths.items()
+        )
     return 0
 
 

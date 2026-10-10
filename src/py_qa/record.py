@@ -19,7 +19,7 @@ BUDGET = "pyqaci.record.budget"
 EXPIRED = "pyqaci.record.expired"
 STALE = "pyqaci.record.stale"
 
-TOOL_PREFIXES = ("ruff", "pylint", "mypy", "pyright", "bandit", "semgrep")
+TOOL_PREFIXES = ("ruff", "pylint", "mypy", "pyright", "bandit", "semgrep", "coverage")
 _RULE = re.compile(r"^(?:" + "|".join(TOOL_PREFIXES) + r")::[A-Za-z0-9_.\-]+$")
 _FIELDS = ("rule", "path", "justification", "decided_by", "decided_on", "review_by")
 _MIN_CHARACTERS = 40

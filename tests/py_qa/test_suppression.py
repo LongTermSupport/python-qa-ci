@@ -221,3 +221,122 @@ def test_project_files_in_git_include_untracked_but_not_ignored(tmp_path: Path) 
     write(tmp_path, "kept.py", "")
     write(tmp_path, "stub.pyi", "")
     assert project_files(tmp_path, ()) == ["kept.py", "stub.pyi"]
+
+
+def test_mypy_strictness_turned_off_is_a_route(tmp_path: Path) -> None:
+    write(
+        tmp_path,
+        "pyproject.toml",
+        """
+[tool.mypy]
+strict = true
+warn_unreachable = true
+warn_return_any = false
+disallow_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_any_generics = false
+warn_unreachable = false
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = "legacy.*"
+implicit_reexport = true
+allow_untyped_globals = true
+""",
+    )
+    found = {(site.line, site.codes, site.detail) for site in config_sites(tmp_path)}
+    assert found == {
+        (5, ("warn_return_any",), "every module"),
+        (10, ("disallow_untyped_defs",), "tests.*"),
+        (11, ("disallow_any_generics",), "tests.*"),
+        (12, ("warn_unreachable",), "tests.*"),
+        (17, ("implicit_reexport",), "legacy.*"),
+        (18, ("allow_untyped_globals",), "legacy.*"),
+    }
+
+
+def test_mypy_flags_at_their_defaults_without_strict_are_not_routes(tmp_path: Path) -> None:
+    write(
+        tmp_path,
+        "pyproject.toml",
+        "[tool.mypy]\nwarn_return_any = false\nimplicit_reexport = true\n"
+        '[[tool.mypy.overrides]]\nmodule = "a"\ndisallow_untyped_defs = false\n',
+    )
+    assert config_sites(tmp_path) == []
+
+
+def test_mypy_ini_strictness_turned_off_in_a_section(tmp_path: Path) -> None:
+    write(
+        tmp_path,
+        "mypy.ini",
+        "[mypy]\nstrict = True\n\n[mypy-tests.*]\ndisallow_untyped_defs = False\n"
+        "ignore_errors = True\n",
+    )
+    found = {(site.line, site.codes) for site in config_sites(tmp_path)}
+    assert found == {(5, ("disallow_untyped_defs",)), (6, ("ignore_errors",))}
+
+
+def test_a_key_repeated_in_an_override_is_reported_at_the_override(tmp_path: Path) -> None:
+    write(
+        tmp_path,
+        "pyproject.toml",
+        '[tool.mypy]\nignore_missing_imports = false\n\n[[tool.mypy.overrides]]\nmodule = "v"\n'
+        "ignore_missing_imports = true\n",
+    )
+    assert [(site.line, site.codes) for site in config_sites(tmp_path)] == [
+        (6, ("ignore_missing_imports",))
+    ]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("def f():  #@pragma: no cover\n    pass\n", [(1, "coverage", ("no-cover",))]),
+        ("if x:  #!PRAGMA NO COVER\n    pass\n", [(1, "coverage", ("no-cover",))]),
+        ("while x:  #@pragma: no branch\n    pass\n", [(1, "coverage", ("no-branch",))]),
+        ('x = "#@pragma: no cover"\n', []),
+    ],
+)
+def test_coverage_exclusion_comments(
+    text: str, expected: list[tuple[int, str, tuple[str, ...]]]
+) -> None:
+    assert sites(text) == expected
+
+
+def test_coverage_configuration_routes(tmp_path: Path) -> None:
+    write(
+        tmp_path,
+        "pyproject.toml",
+        """
+[tool.coverage.run]
+branch = true
+omit = ["tests/*"]
+
+[tool.coverage.report]
+fail_under = 95
+exclude_lines = ["if TYPE_CHECKING:"]
+exclude_also = ["raise NotImplementedError"]
+partial_branches = ["while True:"]
+""",
+    )
+    found = {(site.path, site.line, site.tool, site.codes) for site in config_sites(tmp_path)}
+    assert found == {
+        ("pyproject.toml", 4, "coverage", ("omit",)),
+        ("pyproject.toml", 8, "coverage", ("exclude_lines",)),
+        ("pyproject.toml", 9, "coverage", ("exclude_also",)),
+        ("pyproject.toml", 10, "coverage", ("partial_branches",)),
+    }
+
+
+@pytest.mark.parametrize(
+    ("name", "section"),
+    [(".coveragerc", "report"), ("setup.cfg", "coverage:report"), ("tox.ini", "coverage:report")],
+)
+def test_coverage_ini_routes(tmp_path: Path, name: str, section: str) -> None:
+    write(tmp_path, name, f"[{section}]\nexclude_lines =\n    if TYPE_CHECKING:\n")
+    assert [(site.path, site.line, site.codes) for site in config_sites(tmp_path)] == [
+        (name, 2, ("exclude_lines",))
+    ]

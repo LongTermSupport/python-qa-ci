@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 BUNDLED_DOCS = Path(__file__).parent / "docs" / "rules"
 DANGLING = "pyqaci.docs.dangling"
 REQUIRED_SECTIONS = ("## What it flags", "## Why", "## How to fix correctly")
-_PREFIX = re.compile(r"^(?:ruff|pylint|mypy|pyright|bandit|semgrep)::")
+_PREFIX = re.compile(r"^(?:ruff|pylint|mypy|pyright|bandit|semgrep|coverage)::")
 
 
 def missing_sections(page: str) -> list[str]:

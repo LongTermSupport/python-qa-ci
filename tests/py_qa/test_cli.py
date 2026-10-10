@@ -66,6 +66,21 @@ def test_rules_text_and_json(root: Path, capsys: pytest.CaptureFixture[str]) -> 
     assert {"pyqaci-broad-suppress", "pyqaci.record.invalid", "F401"} <= identifiers
     assert data["record"][0]["rule"] == "ruff::E501"
     assert data["scan_exclude"] == []
+    assert data["lane_paths"] == {}
+
+
+def test_rules_lists_lanes_with_paths_of_their_own(
+    root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (root / "pyproject.toml").write_text(
+        '[tool.py-qa]\npaths = ["src", "tests"]\n[tool.py-qa.lane_paths]\nmypy = ["src"]\n',
+        encoding="utf-8",
+    )
+    assert main(["rules"]) == 0
+    text = capsys.readouterr().out
+    assert "Lanes given paths of their own, in place of paths (src, tests):\n  mypy: src\n" in text
+    assert main(["rules", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["lane_paths"] == {"mypy": ["src"]}
 
 
 def test_record_list_and_check(root: Path, capsys: pytest.CaptureFixture[str]) -> None:
