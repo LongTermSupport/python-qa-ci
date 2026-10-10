@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import re
 import subprocess
 import sys
@@ -12,7 +13,7 @@ from py_qa.finding import Finding
 from py_qa.tools import BUNDLED_PLUGIN
 
 if TYPE_CHECKING:
-    from py_qa.config import Config
+    from py_qa.config import Config, ProjectCheck
     from py_qa.defences import Defence
 
 BUNDLED_DOCS = Path(__file__).parent / "docs" / "rules"
@@ -30,9 +31,17 @@ def missing_sections(page: str) -> list[str]:
 def resolve(identifier: str, config: Config) -> str | None:
     """Return the documentation for an identifier exactly as printed, or None if nothing has it.
 
-    The order is the bundled pages, the project's own pages under docs_dir, then the catalogues
-    Pylint, Ruff and mypy ship with their installed copies.
+    The order is the bundled pages, the project's own pages under docs_dir, the project's
+    checks, then the catalogues Pylint, Ruff and mypy ship with their installed copies, and last
+    the project's rule_doc_command.
     """
+    found = _resolve_known(identifier, config)
+    if found is None and config.rule_doc_command is not None:
+        found = _project_rule_doc(identifier, config)
+    return found
+
+
+def _resolve_known(identifier: str, config: Config) -> str | None:
     name = _PREFIX.sub("", identifier)
     symbol = _pylint_symbol(name, config) or name
     for directory in (BUNDLED_DOCS, config.root / config.docs_dir):
@@ -40,11 +49,78 @@ def resolve(identifier: str, config: Config) -> str | None:
             page = directory / f"{candidate}.md"
             if page.is_file():
                 return page.read_text(encoding="utf-8")
+    check = next((check for check in config.checks if check.name == name), None)
+    if check is not None:
+        return _check_doc(check, config)
     if identifier.partition("::")[0] in {*_UNROUTED_TOOLS, "coverage"}:
         # A Bandit B-code is not Ruff's flake8-bugbear code of the same number.
         return _route_doc(identifier)
     found = _pylint_doc(name, config) or _ruff_doc(name) or _mypy_doc(name)
     return found or _route_doc(identifier)
+
+
+def _project_rule_doc(identifier: str, config: Config) -> str | None:
+    """Return what the project's rule_doc_command prints for identifier, if it knows it."""
+    tokens = {"{python}": sys.executable, "{identifier}": identifier}
+    command = [tokens.get(argument, argument) for argument in config.rule_doc_command or ()]
+    try:
+        result = subprocess.run(
+            command, cwd=config.root, capture_output=True, text=True, check=False
+        )
+    except OSError:
+        return None
+    return result.stdout if result.returncode == 0 and result.stdout.strip() else None
+
+
+def _check_doc(check: ProjectCheck, config: Config) -> str:
+    """Return a project check's page: what it requires, how it runs, and its own documentation."""
+    lines = [f"# {check.name}, a project check", "", check.description, ""]
+    lines.append(f"Run as: {' '.join(check.command)}")
+    if check.paths is not None:
+        lines.append(f"Watches: {', '.join(check.paths)}")
+    if check.diff_command is not None:
+        lines.append(f"In a diff run: {' '.join(check.diff_command)}")
+    if not check.in_diff:
+        lines.append("In a diff run: not run; the full run checks it")
+    lines.append(f"Documented in: {check.doc}")
+    body = doc_text(config.root / check.doc)
+    if body:
+        lines.extend(["", body])
+    return "\n".join(lines) + "\n"
+
+
+def doc_text(path: Path) -> str:
+    """Return the part of a check's doc file that documents it.
+
+    That is a Python file's module docstring, a shell script's leading comment block, or else the
+    whole file.
+    """
+    if not path.is_file():
+        return ""
+    text = path.read_text(encoding="utf-8")
+    if path.suffix == ".py":
+        try:
+            docstring = ast.get_docstring(ast.parse(text))
+        except SyntaxError:
+            docstring = None
+        if docstring:
+            return docstring.strip()
+    elif path.suffix in {".sh", ".bash"} or text.startswith("#!"):
+        comment = _leading_comment(text)
+        if comment:
+            return comment
+    return text.strip()
+
+
+def _leading_comment(text: str) -> str:
+    block: list[str] = []
+    for line in text.splitlines():
+        if line.startswith("#!") and not block:
+            continue
+        if not line.startswith("#"):
+            break
+        block.append(line[1:].removeprefix(" "))
+    return "\n".join(block).strip()
 
 
 def _pylint_definitions(name: str, config: Config) -> list[tuple[str, str, str]]:
@@ -109,6 +185,9 @@ def check_docs(config: Config, defences: list[Defence]) -> list[Finding]:
     for defence in defences:
         if defence.origin not in {"bundled", "project"}:
             continue
+        if defence.tool == "check":
+            findings.extend(_check_doc_findings(defence, config))
+            continue
         directory = BUNDLED_DOCS if defence.origin == "bundled" else config.root / config.docs_dir
         page = directory / f"{defence.identifier}.md"
         display = (
@@ -130,6 +209,18 @@ def check_docs(config: Config, defences: list[Defence]) -> list[Finding]:
                 )
             )
     return findings
+
+
+def _check_doc_findings(defence: Defence, config: Config) -> list[Finding]:
+    check = next(check for check in config.checks if check.name == defence.identifier)
+    path = config.root / check.doc
+    if not path.is_file():
+        message = f"{check.name}'s doc {check.doc} does not exist"
+    elif not doc_text(path):
+        message = f"{check.name}'s doc {check.doc} is empty"
+    else:
+        return []
+    return [Finding(check.doc, 0, DANGLING, message)]
 
 
 # What each configuration or comment route silences, for the identifiers the suppression lane

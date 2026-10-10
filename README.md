@@ -20,7 +20,7 @@ Pin an exact tag, as a development dependency of the project, so the tools run i
 own environment and see its dependencies:
 
 ```bash
-uv add --dev "py-qa-ci @ git+https://github.com/LongTermSupport/py-qa-ci@v0.3.0"
+uv add --dev "py-qa-ci @ git+https://github.com/LongTermSupport/py-qa-ci@v0.4.0"
 uv run py-qa run
 ```
 
@@ -44,14 +44,23 @@ one invocation reports every static finding; if any of them fails, the runners d
 |           | `ruff`           | `ruff check`, the project's Ruff configuration or the bundled one                                                                 |
 |           | `mypy`           | mypy, the project's configuration or the bundled strict one                                                                       |
 |           | `pylint`         | Pylint as the bespoke rule host: the bundled plugin, the project's plugins, nothing else                                          |
+|           | a check's `name` | each `[[tool.py-qa.check]]` the project declares among the detectors, in the order declared                                       |
 | runners   | `test`           | pytest, under coverage.py with `coverage.fail_under` when the `coverage` switch is on; or the project's own `test.command`        |
+|           | a check's `name` | each `[[tool.py-qa.check]]` declared with `phase = "runners"`, in the order declared                                              |
 |           | `audit`          | pip-audit over the environment (off by default; needs network and the `audit` extra)                                              |
 
-Options: `-t <lane>` (repeatable; overrides the switches), `-p <path>` (repeatable; one file is
-enough; limits the format and detector lanes to those paths and does not run the runners),
-`--no-fix`, `--ci`, `--fail-fast`. Every identifier a tool prints reaches the output unaltered.
-The run ends with a table of every lane, its result and the seconds it took, and the total.
-Exit codes: 0 pass, 1 a lane failed, 2 a usage or configuration error.
+Options: `-t <lane>` (repeatable; overrides the switches), `--skip <lane>` (repeatable; every
+lane but these), `-p <path>` (repeatable; one file is enough; limits the format and detector
+lanes to those paths and does not run the runners), `--diff` and `--base <ref>` (a diff run,
+below), `--json <file>` (also write the outcome of every lane, and a diff run's test selection,
+as JSON), `--no-lock`, `--no-fix`, `--ci`, `--fail-fast`. Every identifier a tool prints reaches
+the output unaltered. The run ends with a table of every lane, its result and the seconds it
+took, and the total. Exit codes: 0 pass, 1 a lane failed, 2 a usage or configuration error, 3
+another `py-qa run` holds the lock.
+
+One run at a time: `py-qa run` holds an advisory lock, `py-qa/run.lock` in the work tree's git
+directory unless `lock` names another file, and a second run started meanwhile exits 3 naming
+the holder's pid. The kernel releases the lock when its holder exits, however it exits. `lock = false` or `--no-lock` turns it off.
 
 Other commands, none of which runs a defence:
 
@@ -65,6 +74,108 @@ Other commands, none of which runs a defence:
 - `py-qa record check|list`: validate, or list, the project record
 - `py-qa summary [--check]`: write, or check, the agent summary region
 - `py-qa tools`: every lane, whether it is on, and the tool behind it with its installed version
+- `py-qa affected [--base <ref>] [--json]`: the tests a diff run would run, each with the changed
+  files that reach it, and every changed file nothing accounts for; exit 1 when the diff map
+  names a test that does not exist
+
+## Project checks
+
+A check the project already has, a script that exits non-zero on a finding, becomes a lane:
+
+```toml
+[[tool.py-qa.check]]
+name = "spelling"                                    # the lane, and the identifier it fails with
+command = ["{python}", "scripts/check_spelling.py"]  # run without a shell; {python} is py-qa's
+description = "Write British English in prose."      # the standing instruction py-qa rules lists
+doc = "scripts/check_spelling.py"                    # what py-qa rule-doc spelling prints
+phase = "detectors"                                  # or "runners", after the test lane
+paths = ["**/*.md"]                                  # a diff run runs it only when one changed
+diff_command = ["{python}", "scripts/check_spelling.py", "{files}"]  # and like this, if given
+diff = true                                          # false: the full run only
+verdict = { file = "out/spelling.json", key = "summary.passed" }    # see below
+```
+
+`name`, `command`, `description` and `doc` are required. `py-qa rule-doc <name>` prints the
+check's description, how it runs, and what documents it: a Markdown file whole, a Python file's
+module docstring, a shell script's leading comment block. The `docs` lane fails while the `doc`
+file is missing or empty. A check is listed by `py-qa rules` and in the agent summary like any
+defence, and switched off by removing it.
+
+With `verdict`, the check passes only when it exits 0 and also writes the named JSON file during
+this run with the dotted key true: a report that says it failed, or one left by an earlier run,
+fails the lane. The test lane takes the same `verdict`, and `diff_verdict` for its
+`diff_command`. Identifiers a check prints of its own resolve through `rule_doc_command`, a
+command py-qa runs for any identifier nothing else documents, with `{identifier}` as an argument.
+
+`[tool.py-qa.test] setup` lists commands run before the tests, in a full run and a diff run
+alike, such as starting a service the tests talk to; one that fails fails the test lane.
+
+## Diff runs
+
+`py-qa run --diff` checks what changed, not the whole project: the commits since the merge base
+of the base ref and HEAD, staged and unstaged edits, and files git does not ignore. The base is
+`--base <ref>`, else `[tool.py-qa.diff] base`, else the branch `origin/HEAD` names, else the first
+of `origin/main`, `origin/master`, `main` and `master` that exists. Each lane narrows:
+
+| Lane                            | In a diff run                                                                                      |
+| ------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `fmt`, `ruff`, `pylint`         | the changed Python files within the lane's paths                                                   |
+| `mypy`                          | its whole scope, since one file's types depend on others; mypy's own cache keeps it quick          |
+| `record`, `suppression`, `docs` | the whole project, as in a full run: they are quick, and a stale exception needs the whole picture |
+| a project check                 | runs when no `paths` are given or one changed file matches them, as `diff_command` if it has one   |
+| `test`                          | the tests the change can affect, with no coverage verdict                                          |
+
+The tests a change can affect come from a graph of the project's files. Every Python file is
+parsed for its imports, absolute and relative, and for strings that name a project module (a
+`mock.patch` target, an `importlib.import_module` argument) or a project file (by its path, a path
+suffix, or a file name no other file shares). A string with spaces in it, a message or an
+embedded script, is read word by word, and a file it names counts only for a test that names it:
+a module that mentions a file in an error message is not a way through to every importer of the
+module. Docstrings are prose and count for nothing. A test is selected when a changed file is
+reachable from it. Importing a submodule runs its packages' `__init__`, and a test runs every
+`conftest.py` above it: a change to that `__init__` or conftest reaches every file that loads it,
+but what it imports reaches only the files that import that themselves, which keeps one
+package's re-exports from selecting every test. A deleted module selects the tests that still
+import it. Parsed results are cached by size and modification time under the git directory, and
+files not in the cache are parsed in parallel.
+
+What the graph cannot see is declared in `[tool.py-qa.diff]`:
+
+```toml
+[tool.py-qa.diff]
+base = "origin/main"
+full_tests_on = ["/pyproject.toml", "/uv.lock"]  # the default lists pyproject.toml, the lock files,
+                                                 # setup.py, setup.cfg, tox.ini, pytest.ini and more
+unmapped = "full"                                # or "ignore"
+
+[[tool.py-qa.diff.map]]
+glob = "docs/**/*.md"                            # files a test reads by glob or a computed name
+exclude = ["docs/archive/**"]
+tests = ["tests/test_docs.py"]                   # [] declares that no test reads them
+why = "test_docs reads every page under docs/"
+
+[tool.py-qa.diff.selector]                       # a selector of the project's own, if it has one
+command = ["{python}", "scripts/select_tests.py", "--range", "{range}"]  # {range} is merge-base..HEAD
+tests_key = "selected"                           # the JSON key listing the tests it selects
+unmapped_key = "unmapped"                        # the key listing files it cannot map, if any
+```
+
+A project that already selects tests for a change keeps its selector: its tests join the graph's,
+and a file it cannot map counts as unmapped. It prints JSON on standard output and exits 0; a
+failure, or output without the keys, fails the test lane.
+
+A change to a `full_tests_on` file runs the whole test lane. A changed file that is not Python,
+that no test reaches and that no map entry matches is unmapped: with `unmapped = "full"`, the
+default, it runs the whole test lane too, and either way the run names it. A changed Python file
+no test reaches is named as untested. A map entry naming a test that does not exist fails the
+test lane. With `[tool.py-qa.test] command`, `diff_command` (with `{tests}`, and `{base}` if
+wanted) is what runs the selection; without it the project's command runs whole. Globs here and
+in a check's `paths` treat `**` as any number of directories and `*` as part of one; a pattern
+with no `/` matches a file name at any depth, and a leading `/` anchors it to the root.
+
+The graph cannot see a module loaded by a name built at run time, and it treats importing a
+module as depending on all of it. A diff run is the quick check before committing; the full run
+stays the gate, before a merge and in CI.
 
 ## Writing rules
 
@@ -175,6 +286,8 @@ scan_exclude = []             # globs kept out of the suppression scan and the P
 pylint_plugins = []           # the project's own Pylint plugin modules
 pylint_enable = []            # Pylint's own messages the project adopts as defences
 formatter = "ruff"            # or "black", for a project formatted by Black (install it yourself)
+lock = true                   # false, or a path: the lock one run at a time holds
+# rule_doc_command = ["{python}", "scripts/explain.py", "{identifier}"]  # documents the rest
 
 [tool.py-qa.lane_paths]       # paths of its own for fmt, ruff, mypy or pylint, in place of paths
 # mypy = ["src", "scripts"]   # a -p subset is narrowed to the lane's paths; listed by py-qa rules
@@ -182,6 +295,11 @@ formatter = "ruff"            # or "black", for a project formatted by Black (in
 [tool.py-qa.test]
 # command = ["scripts/run_tests.sh"]  # the project's own test entry point, run without a shell,
                                        # in place of pytest under coverage; it owns coverage
+# diff_command = ["scripts/run_tests.sh", "{tests}"]  # how a diff run runs its selection
+# setup = [["scripts/start-db.sh"]]   # commands run before the tests
+# verdict = { file = "out/tests.json", key = "summary.passed" }  # and diff_verdict
+
+# [[tool.py-qa.check]] and [tool.py-qa.diff]: see "Project checks" and "Diff runs"
 
 [tool.py-qa.record]
 path = "qa/record.toml"

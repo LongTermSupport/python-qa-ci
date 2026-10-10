@@ -1,6 +1,6 @@
 [project]
 name = "py-qa-ci"
-version = "0.3.0"
+version = "0.4.0"
 description = "One QA entry point for Python projects, built for the Defence Before Fix method"
 readme = "README.md"
 license = "MIT"

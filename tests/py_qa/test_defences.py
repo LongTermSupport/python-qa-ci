@@ -28,7 +28,9 @@ def test_lists_builtins_bundled_project_ruff_and_mypy(tmp_path: Path) -> None:
         tmp_path,
         '[tool.py-qa]\npylint_plugins = ["proj_rules"]\n'
         '[tool.py-qa.summary]\nfile = "AGENTS.md"\n'
-        '[tool.ruff.lint]\nselect = ["F401"]\n',
+        '[tool.ruff.lint]\nselect = ["F401"]\n'
+        '[[tool.py-qa.check]]\nname = "spelling"\ncommand = ["x"]\n'
+        'description = "Prose is in British English."\ndoc = "x.md"\n',
     )
     (tmp_path / "proj_rules.py").write_text(PLUGIN, encoding="utf-8")
     defences = {d.identifier: d for d in active_defences(load_config(tmp_path))}
@@ -40,6 +42,9 @@ def test_lists_builtins_bundled_project_ruff_and_mypy(tmp_path: Path) -> None:
     assert defences["proj-no-eval"].summary == "Do not call eval."
     assert defences["F401"].tool == "ruff"
     assert defences["arg-type"].tool == "mypy"
+    assert defences["spelling"].tool == "check"
+    assert defences["spelling"].origin == "project"
+    assert defences["spelling"].summary == "Prose is in British English."
     assert all(d.doc == f"py-qa rule-doc {d.identifier}" for d in defences.values())
 
 

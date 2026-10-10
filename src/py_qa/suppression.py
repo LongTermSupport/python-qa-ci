@@ -83,6 +83,13 @@ _NOSEC = re.compile(r"#\s*nosec\b(?:\s*:?\s*([A-Z][0-9]+(?:[\s,]+[A-Z][0-9]+)*))
 _COVERAGE = re.compile(r"#\s*pragma[:\s]?\s*no\s*(cover|branch)\b", re.IGNORECASE)
 _NOSEMGREP = re.compile(r"#\s*nosemgrep\b(?:\s*:\s*([\w.\-]+(?:\s*,\s*[\w.\-]+)*))?")
 
+# Every directive above starts with one of these words after its '#'; matched without regard to
+# case, it is a superset of them all.
+_CANDIDATE = re.compile(
+    r"#\s*(?:ruff|flake8|noqa|isort|pylint|type|mypy|pyright|nosec|nosemgrep|pragma)",
+    re.IGNORECASE,
+)
+
 # A file-level mypy setting relaxes a check when it allows, ignores or turns a warning off.
 _MYPY_RELAXING = re.compile(r"^(?:allow|ignore|no)-[a-z-]+$")
 
@@ -150,7 +157,13 @@ def _pyright_inline(settings: str) -> list[tuple[str, tuple[str, ...]]]:
 
 
 def comment_sites(display: str, source: str) -> list[Site]:
-    """Return every suppression directive in source's comments; raise SyntaxError if unreadable."""
+    """Return every suppression directive in source's comments; raise SyntaxError if unreadable.
+
+    Source with no text a directive could start with holds no suppression, so it is not
+    tokenized: tokenize is most of a large project's scan, and most files have no directive.
+    """
+    if not _CANDIDATE.search(source):
+        return []
     found: list[Site] = []
     try:
         tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
@@ -495,8 +508,23 @@ def scope_files(root: Path, scan_exclude: tuple[str, ...], paths: tuple[str, ...
     ]
 
 
+@functools.cache
+def in_git_work_tree(root: Path) -> bool:
+    """Return True when root is inside a git work tree, at its top or in a directory below it."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return False
+    return result.returncode == 0 and result.stdout.strip() == "true"
+
+
 def _git_files(root: Path) -> list[str] | None:
-    if not (root / ".git").exists():
+    if not in_git_work_tree(root):
         return None
     result = subprocess.run(
         [

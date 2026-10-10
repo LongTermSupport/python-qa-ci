@@ -14,16 +14,20 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from py_qa import __version__
+from py_qa.affected import SelectorError, select_tests, with_selector
 from py_qa.config import ConfigError, load_config
 from py_qa.defences import BUILTIN, active_defences
+from py_qa.diff import DiffError, changed_files, resolve_base
 from py_qa.docs import check_docs, resolve
-from py_qa.pipeline import LANES, METHOD_LINE, UsageError, run_pipeline, suppression_findings
+from py_qa.lock import LockHeldError, lock_path, run_lock
+from py_qa.pipeline import METHOD_LINE, UsageError, all_lanes, run_pipeline, suppression_findings
 from py_qa.record import RecordEntry, check_record, load_record
 from py_qa.summary import check_summary, write_summary
 from py_qa.tools import lane_tool, pylint_commands, pylint_messages, ruff_check_command
 
 if TYPE_CHECKING:
     from py_qa.config import Config
+    from py_qa.diff import Change
     from py_qa.finding import Finding
 
 _HARNESS_BUILTINS = frozenset(
@@ -45,11 +49,20 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command")
 
     run = commands.add_parser("run", help="format, every detector, then the runners")
-    run.add_argument("-t", "--tool", action="append", default=[], choices=LANES, dest="tools")
+    run.add_argument("-t", "--tool", action="append", default=[], dest="tools", help="a lane")
+    run.add_argument("--skip", action="append", default=[], help="a lane not to run")
     run.add_argument("-p", "--path", action="append", dest="paths")
+    run.add_argument("--diff", action="store_true", help="narrow every lane to what changed")
+    run.add_argument("--base", help="the ref a diff run measures from (implies --diff)")
+    run.add_argument("--json", type=Path, dest="report", help="also write the outcome as JSON")
+    run.add_argument("--no-lock", action="store_true", help="run beside another py-qa run")
     run.add_argument("--ci", action="store_true", help="check instead of fixing")
     run.add_argument("--no-fix", action="store_true", help="check instead of fixing")
     run.add_argument("--fail-fast", action="store_true", help="stop at the first failing lane")
+
+    affected = commands.add_parser("affected", help="the tests a diff run would run, and why")
+    affected.add_argument("--base", help="the ref to measure from")
+    affected.add_argument("--json", action="store_true")
 
     rules = commands.add_parser("rules", help="every active defence and the project record")
     rules.add_argument("--json", action="store_true")
@@ -79,9 +92,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = load_config(Path.cwd())
         return _dispatch(args, config)
-    except (ConfigError, UsageError, ValueError) as error:
+    except (ConfigError, UsageError, DiffError, SelectorError, ValueError) as error:
         sys.stderr.write(f"py-qa: error: {error}\n")
         return 2
+    except LockHeldError as error:
+        sys.stderr.write(f"py-qa: {error}\n")
+        return 3
 
 
 def _today() -> date:
@@ -91,18 +107,9 @@ def _today() -> date:
 def _dispatch(args: argparse.Namespace, config: Config) -> int:
     command = args.command or "run"
     if command == "run":
-        tools = getattr(args, "tools", [])
-        paths = getattr(args, "paths", None)
-        flags = (getattr(args, "no_fix", False), getattr(args, "ci", False))
-        return run_pipeline(
-            config,
-            requested=tuple(tools),
-            paths=tuple(paths) if paths else None,
-            no_fix=any(flags) or bool(os.environ.get("CI")),
-            fail_fast=bool(getattr(args, "fail_fast", False)),
-            out=sys.stdout,
-            today=_today(),
-        )
+        return _run(args, config)
+    if command == "affected":
+        return _affected(config, args.base, as_json=args.json)
     if command == "rules":
         return _rules(config, as_json=args.json)
     if command == "rule-doc":
@@ -116,6 +123,70 @@ def _dispatch(args: argparse.Namespace, config: Config) -> int:
     if command == "summary":
         return _summary(config, check=args.check)
     return _tools(config)
+
+
+def _change(config: Config, base: str | None) -> Change:
+    return changed_files(config.root, resolve_base(config.root, base or config.diff.base))
+
+
+def _run(args: argparse.Namespace, config: Config) -> int:
+    paths = getattr(args, "paths", None)
+    base = getattr(args, "base", None)
+    diff = getattr(args, "diff", False) or base is not None
+    flags = (getattr(args, "no_fix", False), getattr(args, "ci", False))
+    held = None if getattr(args, "no_lock", False) else lock_path(config)
+    with run_lock(held):
+        return run_pipeline(
+            config,
+            requested=tuple(getattr(args, "tools", [])),
+            paths=tuple(paths) if paths else None,
+            no_fix=any(flags) or bool(os.environ.get("CI")),
+            fail_fast=bool(getattr(args, "fail_fast", False)),
+            out=sys.stdout,
+            today=_today(),
+            change=_change(config, base) if diff else None,
+            report=getattr(args, "report", None),
+            skipped=tuple(getattr(args, "skip", [])),
+        )
+
+
+def _affected(config: Config, base: str | None, *, as_json: bool) -> int:
+    """Print the tests a diff run would run, each with the changed files that reach it."""
+    change = _change(config, base)
+    selection = with_selector(config, change, select_tests(config, change))
+    if as_json:
+        data = {
+            "base": change.base,
+            "merge_base": change.merge_base,
+            "changed": list(change.files),
+            "deleted": list(change.deleted),
+            "full": selection.full,
+            "full_reasons": list(selection.full_reasons),
+            "tests": {test: list(names) for test, names in selection.reached_by.items()},
+            "unmapped": list(selection.unmapped),
+            "untested": list(selection.untested),
+            "missing": list(selection.missing),
+        }
+        sys.stdout.write(json.dumps(data, indent=2) + "\n")
+        return 1 if selection.missing else 0
+    count = len(change.files) + len(change.deleted)
+    sys.stdout.write(
+        f"Against {change.base} (merge base {change.merge_base[:12]}): {count} changed\n"
+    )
+    if selection.full:
+        sys.stdout.write("Every test runs:\n")
+        sys.stdout.writelines(f"  {reason}\n" for reason in selection.full_reasons)
+    for test, names in selection.reached_by.items():
+        sys.stdout.write(f"{test}  <-  {', '.join(names)}\n")
+    for label, names in (
+        ("No test is known to read", selection.unmapped),
+        ("No test imports or names", selection.untested),
+        ("Named by [[tool.py-qa.diff.map]] and missing", selection.missing),
+    ):
+        if names:
+            sys.stdout.write(f"{label}:\n")
+            sys.stdout.writelines(f"  {name}\n" for name in names)
+    return 1 if selection.missing else 0
 
 
 def _entries(config: Config) -> tuple[list[RecordEntry], list[Finding]]:
@@ -249,9 +320,11 @@ def _summary(config: Config, *, check: bool) -> int:
 
 
 def _tools(config: Config) -> int:
-    for lane in LANES:
-        state = "on" if config.tools[lane] else "off"
+    lanes = all_lanes(config)
+    width = max(len(lane) for lane in lanes)
+    for lane in lanes:
+        state = "on" if config.tools.get(lane, True) else "off"
         if lane == "summary" and config.summary_file is None:
             state = "off (no summary file)"
-        sys.stdout.write(f"{lane:12} {state:22} {lane_tool(config, lane)}\n")
+        sys.stdout.write(f"{lane:{width}} {state:22} {lane_tool(config, lane)}\n")
     return 0

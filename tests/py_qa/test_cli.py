@@ -1,6 +1,7 @@
 """Tests for the py-qa command line, through main() as a user would call it."""
 
 import json
+import subprocess
 from datetime import UTC, datetime, timedelta
 from importlib.metadata import version
 from pathlib import Path
@@ -161,3 +162,93 @@ def test_tools_names_the_tool_behind_each_lane_not_its_arguments(
     assert "--rcfile" not in lanes["pylint"]
     assert "src" not in lanes["mypy"]
     assert lanes["record"].endswith("py-qa")
+
+
+def git(root: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+
+
+def committed(root: Path) -> None:
+    git(root, "init", "-q", "-b", "main")
+    git(root, "config", "user.email", "dev@example.com")
+    git(root, "config", "user.name", "Dev")
+    git(root, "config", "commit.gpgsign", "false")
+    (root / "src" / "a.py").write_text("x = 1\n", encoding="utf-8")
+    (root / "tests").mkdir()
+    (root / "tests" / "test_a.py").write_text("import a\n", encoding="utf-8")
+    git(root, "add", ".")
+    git(root, "commit", "-q", "-m", "base")
+    git(root, "checkout", "-q", "-b", "work")
+
+
+def test_a_diff_run_writes_its_report(root: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    committed(root)
+    (root / "src" / "a.py").write_text("x = 2  # " + "noqa\n", encoding="utf-8")
+    assert main(["run", "--base", "main", "-t", "suppression", "--json", "qa.json"]) == 1
+    out = capsys.readouterr().out
+    assert "diff run against main" in out
+    assert "src/a.py:1: pyqaci.suppression.blanket" in out
+    data = json.loads((root / "qa.json").read_text(encoding="utf-8"))
+    assert data["mode"] == "diff"
+    assert data["diff"]["changed"] == ["src/a.py"]
+
+
+def test_affected_lists_the_tests_and_why(root: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    committed(root)
+    (root / "src" / "a.py").write_text("x = 2\n", encoding="utf-8")
+    (root / "notes.txt").write_text("hello\n", encoding="utf-8")
+    assert main(["affected", "--base", "main"]) == 0
+    out = capsys.readouterr().out
+    assert "tests/test_a.py  <-  src/a.py" in out
+    assert "Every test runs:\n  notes.txt: no test is known to read it" in out
+    assert "No test is known to read:\n  notes.txt" in out
+    assert main(["affected", "--base", "main", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["tests"] == {"tests/test_a.py": ["src/a.py"]}
+    assert data["full"] is True
+    assert data["unmapped"] == ["notes.txt"]
+
+
+def test_affected_fails_when_the_map_names_a_missing_test(
+    root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    committed(root)
+    with (root / "pyproject.toml").open("a", encoding="utf-8") as handle:
+        handle.write('[[tool.py-qa.diff.map]]\nglob = "*.txt"\ntests = ["tests/gone.py"]\n')
+    (root / "notes.txt").write_text("hello\n", encoding="utf-8")
+    assert main(["affected", "--base", "main"]) == 1
+    assert (
+        "Named by [[tool.py-qa.diff.map]] and missing:\n  tests/gone.py" in capsys.readouterr().out
+    )
+    assert main(["affected", "--base", "main", "--json"]) == 1
+
+
+def test_an_unknown_base_exits_2(root: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    committed(root)
+    assert main(["run", "--base", "nope"]) == 2
+    assert "the base nope is not a commit" in capsys.readouterr().err
+
+
+def test_a_held_lock_exits_3(root: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    from py_qa.lock import run_lock
+
+    committed(root)
+    with run_lock(root / ".git" / "py-qa" / "run.lock"):
+        assert main(["run", "-t", "record"]) == 3
+        assert "another py-qa run holds" in capsys.readouterr().err
+        assert main(["run", "-t", "record", "--no-lock"]) == 0
+
+
+def test_tools_and_rule_doc_cover_project_checks(
+    root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with (root / "pyproject.toml").open("a", encoding="utf-8") as handle:
+        handle.write(
+            '[[tool.py-qa.check]]\nname = "spelling"\ncommand = ["scripts/spell.sh", "--all"]\n'
+            'description = "Prose is in British English."\ndoc = "scripts/spell.sh"\n'
+        )
+    assert main(["tools"]) == 0
+    lanes = {line.split()[0]: line for line in capsys.readouterr().out.splitlines()}
+    assert lanes["spelling"].endswith("project check: scripts/spell.sh --all")
+    assert main(["rule-doc", "spelling"]) == 0
+    assert capsys.readouterr().out.startswith("# spelling, a project check")
