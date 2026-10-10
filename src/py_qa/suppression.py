@@ -360,7 +360,11 @@ def _git_files(root: Path) -> list[str] | None:
 
 
 def check_suppressions(
-    sites: list[Site], entries: list[RecordEntry], *, full_scan: bool
+    sites: list[Site],
+    entries: list[RecordEntry],
+    *,
+    full_scan: bool,
+    record_path: str = "qa/record.toml",
 ) -> list[Finding]:
     """Hold every site to the record; on a full scan, report entries that cover nothing."""
     findings: list[Finding] = []
@@ -393,10 +397,11 @@ def check_suppressions(
     if full_scan:
         findings.extend(
             Finding(
-                entry.path,
-                0,
+                record_path,
+                entry.line,
                 STALE,
-                f"exception #{entry.number} ({entry.rule}) covers no suppression; remove it",
+                f"exception #{entry.number} ({entry.rule}, {entry.path}) covers no suppression; "
+                "remove it",
             )
             for entry in entries
             if (entry.rule, entry.path) not in used

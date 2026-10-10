@@ -121,7 +121,9 @@ def suppression_findings(
             findings.append(found)
         else:
             sites.extend(found)
-    return findings + check_suppressions(sites, entries, full_scan=paths is None)
+    return findings + check_suppressions(
+        sites, entries, full_scan=paths is None, record_path=config.record.path
+    )
 
 
 def _file_sites(root: Path, name: str) -> list[Site] | Finding:

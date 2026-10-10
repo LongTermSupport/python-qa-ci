@@ -47,7 +47,7 @@ def test_valid_entry_loads(tmp_path: Path) -> None:
     assert findings == []
     assert entries == [
         RecordEntry(
-            1, "ruff::S603", "src/run.py", GOOD, "alice", date(2026, 1, 15), date(2026, 4, 15)
+            1, "ruff::S603", "src/run.py", GOOD, "alice", date(2026, 1, 15), date(2026, 4, 15), 1
         )
     ]
 
@@ -128,3 +128,27 @@ def test_expired_entry() -> None:
 
 def test_within_budget_and_in_date_is_clean() -> None:
     assert check_record([make("ruff::S603", "src/a.py")], RecordPolicy(), "r", TODAY) == []
+
+
+def test_findings_point_at_the_line_of_their_exception(tmp_path: Path) -> None:
+    text = (
+        "# The project record.\n\n"
+        + entry_text()
+        + "\n"
+        + entry_text(path='"src/b.py"', justification='"legacy"')
+        + "\n"
+        + entry_text(
+            path='"src/c.py"',
+            review_by="2026-02-01",
+            justification=f'"{GOOD} The module is the only caller."',
+        )
+    )
+    entries, findings = load(tmp_path, text)
+    assert [entry.line for entry in entries] == [3, 19]
+    assert findings == [
+        "qa/record.toml:11: pyqaci.record.invalid exception #2 (ruff::S603, src/b.py): "
+        "justification is generic or too short; name the hazard accepted and the scope, in at "
+        "least 6 words of its own"
+    ]
+    expired = check_record(entries, RecordPolicy(), "qa/record.toml", TODAY)
+    assert [finding.render().split(": ")[0] for finding in expired] == ["qa/record.toml:19"]

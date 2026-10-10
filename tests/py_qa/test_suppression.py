@@ -5,6 +5,7 @@ holds no directive of its own for any tool or editor hook to act on.
 """
 
 import subprocess
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -193,6 +194,15 @@ def test_stale_entry_reported_only_on_a_full_scan() -> None:
     stale = check_suppressions([], record, full_scan=True)
     assert [f.rule for f in stale] == ["pyqaci.record.stale"]
     assert check_suppressions([], record, full_scan=False) == []
+
+
+def test_stale_entry_is_reported_where_it_is_written() -> None:
+    record = [replace(entry("ruff::E501", "a.py"), line=7)]
+    stale = check_suppressions([], record, full_scan=True, record_path="qa/record.toml")
+    assert [f.render() for f in stale] == [
+        "qa/record.toml:7: pyqaci.record.stale exception #1 (ruff::E501, a.py) covers no "
+        "suppression; remove it"
+    ]
 
 
 def test_project_files_outside_git_skip_environments(tmp_path: Path) -> None:
