@@ -2,6 +2,7 @@
 
 import json
 from datetime import UTC, datetime, timedelta
+from importlib.metadata import version
 from pathlib import Path
 
 import pytest
@@ -65,6 +66,21 @@ def test_rules_text_and_json(root: Path, capsys: pytest.CaptureFixture[str]) -> 
     assert {"pyqaci-broad-suppress", "pyqaci.record.invalid", "F401"} <= identifiers
     assert data["record"][0]["rule"] == "ruff::E501"
     assert data["scan_exclude"] == []
+    assert data["lane_paths"] == {}
+
+
+def test_rules_lists_lanes_with_paths_of_their_own(
+    root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (root / "pyproject.toml").write_text(
+        '[tool.py-qa]\npaths = ["src", "tests"]\n[tool.py-qa.lane_paths]\nmypy = ["src"]\n',
+        encoding="utf-8",
+    )
+    assert main(["rules"]) == 0
+    text = capsys.readouterr().out
+    assert "Lanes given paths of their own, in place of paths (src, tests):\n  mypy: src\n" in text
+    assert main(["rules", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["lane_paths"] == {"mypy": ["src"]}
 
 
 def test_record_list_and_check(root: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -130,3 +146,18 @@ def test_tools_lists_lanes(root: Path, capsys: pytest.CaptureFixture[str]) -> No
     assert "ruff" in out
     assert "audit" in out
     assert "off" in out
+
+
+def test_tools_names_the_tool_behind_each_lane_not_its_arguments(
+    root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["tools"]) == 0
+    lanes = {line.split()[0]: line for line in capsys.readouterr().out.splitlines()}
+    assert lanes["fmt"].endswith(f"ruff format {version('ruff')}")
+    assert lanes["mypy"].endswith(f"mypy {version('mypy')}")
+    assert lanes["pylint"].endswith(f"pylint {version('pylint')}")
+    assert "pytest" in lanes["test"]
+    assert "coverage" in lanes["test"]
+    assert "--rcfile" not in lanes["pylint"]
+    assert "src" not in lanes["mypy"]
+    assert lanes["record"].endswith("py-qa")

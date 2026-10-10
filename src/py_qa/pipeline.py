@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import subprocess
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -23,7 +25,6 @@ from py_qa.suppression import (
 from py_qa.tools import lane_commands
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from datetime import date
     from pathlib import Path
     from typing import TextIO
@@ -66,9 +67,11 @@ class _Run:
     paths: tuple[str, ...] | None
     out: TextIO
     today: date
+    clock: Callable[[], float]
+    started: float
     entries_cache: tuple[list[RecordEntry], list[Finding]] | None = None
     defences_cache: list[Defence] | None = None
-    results: list[tuple[str, str]] = field(default_factory=list)
+    results: list[tuple[str, str, float | None]] = field(default_factory=list)
 
     def entries(self) -> tuple[list[RecordEntry], list[Finding]]:
         if self.entries_cache is None:
@@ -118,7 +121,9 @@ def suppression_findings(
             findings.append(found)
         else:
             sites.extend(found)
-    return findings + check_suppressions(sites, entries, full_scan=paths is None)
+    return findings + check_suppressions(
+        sites, entries, full_scan=paths is None, record_path=config.record.path
+    )
 
 
 def _file_sites(root: Path, name: str) -> list[Site] | Finding:
@@ -138,13 +143,14 @@ def run_pipeline(
     out: TextIO,
     runner: Runner = run_subprocess,
     today: date,
+    clock: Callable[[], float] = time.monotonic,
 ) -> int:
     """Run the selected lanes phase by phase and return the exit code: 0 pass, 1 fail."""
     unknown = sorted(set(requested) - set(LANES))
     if unknown:
         msg = f"unknown tool {', '.join(unknown)}; known: {', '.join(LANES)}"
         raise UsageError(msg)
-    state = _Run(config, paths, out, today)
+    state = _Run(config, paths, out, today, clock=clock, started=clock())
     commands = lane_commands(config, paths=paths, no_fix=no_fix)
     failed = False
     for phase, lanes in PHASES:
@@ -156,19 +162,22 @@ def run_pipeline(
                 else "-p limits the run to format and detectors"
             )
             out.write(f"py-qa: runners not run: {reason}\n")
-            state.results.extend((lane, "not run" if lane in selected else "off") for lane in lanes)
+            state.results.extend(
+                (lane, "not run" if lane in selected else "off", None) for lane in lanes
+            )
             break
         for lane in lanes:
             if lane not in selected:
-                state.results.append((lane, "off"))
+                state.results.append((lane, "off", None))
                 continue
             out.write(f"== {lane} ==\n")
             out.flush()
+            started = clock()
             if lane in BUILTIN_LANES:
                 ok = _report(state.builtin(lane), out)
             else:
                 ok = _external(lane, commands[lane], config, runner, out)
-            state.results.append((lane, "PASS" if ok else "FAIL"))
+            state.results.append((lane, "PASS" if ok else "FAIL", clock() - started))
             failed = failed or not ok
             if failed and fail_fast:
                 return _finish(state, failed=True)
@@ -192,6 +201,8 @@ def _external(
     lane: str, steps: list[list[str]], config: Config, runner: Runner, out: TextIO
 ) -> bool:
     identifiers = _LANE_IDENTIFIERS.get(lane, ())
+    if not steps:
+        out.write(f"py-qa: {lane}: nothing to check within this lane's paths\n")
     for index, command in enumerate(steps):
         out.flush()
         if runner(command, config.root) == 0:
@@ -206,8 +217,10 @@ def _external(
 def _finish(state: _Run, *, failed: bool) -> int:
     out = state.out
     out.write("\n")
-    for lane, status in state.results:
-        out.write(f"{status:8} {lane}\n")
+    for lane, status, seconds in state.results:
+        took = "" if seconds is None else f" {seconds:>6.1f}s"
+        out.write(f"{status:8} {lane:12}{took}".rstrip() + "\n")
+    out.write(f"{'':8} {'total':12} {state.clock() - state.started:>6.1f}s\n")
     if failed:
         out.write(f"\nFAIL\n{METHOD_LINE}\n")
         return 1

@@ -20,7 +20,7 @@ Pin an exact tag, as a development dependency of the project, so the tools run i
 own environment and see its dependencies:
 
 ```bash
-uv add --dev "py-qa-ci @ git+https://github.com/LongTermSupport/py-qa-ci@v0.2.0"
+uv add --dev "py-qa-ci @ git+https://github.com/LongTermSupport/py-qa-ci@v0.3.0"
 uv run py-qa run
 ```
 
@@ -44,12 +44,13 @@ one invocation reports every static finding; if any of them fails, the runners d
 |           | `ruff`           | `ruff check`, the project's Ruff configuration or the bundled one                                                                 |
 |           | `mypy`           | mypy, the project's configuration or the bundled strict one                                                                       |
 |           | `pylint`         | Pylint as the bespoke rule host: the bundled plugin, the project's plugins, nothing else                                          |
-| runners   | `test`           | pytest, under coverage.py with `coverage.fail_under` when the `coverage` switch is on                                             |
+| runners   | `test`           | pytest, under coverage.py with `coverage.fail_under` when the `coverage` switch is on; or the project's own `test.command`        |
 |           | `audit`          | pip-audit over the environment (off by default; needs network and the `audit` extra)                                              |
 
 Options: `-t <lane>` (repeatable; overrides the switches), `-p <path>` (repeatable; one file is
 enough; limits the format and detector lanes to those paths and does not run the runners),
 `--no-fix`, `--ci`, `--fail-fast`. Every identifier a tool prints reaches the output unaltered.
+The run ends with a table of every lane, its result and the seconds it took, and the total.
 Exit codes: 0 pass, 1 a lane failed, 2 a usage or configuration error.
 
 Other commands, none of which runs a defence:
@@ -63,7 +64,7 @@ Other commands, none of which runs a defence:
 - `py-qa docs-check`: fail if a listed defence has no complete page
 - `py-qa record check|list`: validate, or list, the project record
 - `py-qa summary [--check]`: write, or check, the agent summary region
-- `py-qa tools`: every lane, whether it is on, and the tool behind it
+- `py-qa tools`: every lane, whether it is on, and the tool behind it with its installed version
 
 ## Writing rules
 
@@ -140,12 +141,17 @@ review_by = 2026-04-15                  # within max_review_days of decided_on
 
 The suppression itself stays where the tool reads it (`noqa: S602` on the line, an entry in
 `per-file-ignores`, `type: ignore[arg-type]`); the record is what makes it legitimate. The
-`suppression` lane finds every suppression comment for Ruff, Pylint, mypy, Pyright, Bandit and
-Semgrep, read with `tokenize` so strings never count, and every setting in the Ruff and mypy
-configuration that silences a finding or excludes a file. Each must match an exception by
+`suppression` lane finds every suppression comment for Ruff, Pylint, mypy, Pyright, Bandit,
+Semgrep and coverage.py (`pragma: no cover`), read with `tokenize` so strings never count; every
+setting in the Ruff and mypy configuration that silences a finding or excludes a file; a mypy
+strictness flag turned off where `strict` or the global section had it on
+(`disallow_untyped_defs = false` in an override); and the coverage.py settings that take code
+out of measurement (`omit`, `exclude_lines`, `exclude_also`, `partial_branches`). Each must match an exception by
 identifier and file. A suppression that names no identifier (a bare `noqa`, `type: ignore`,
 `pylint: disable=all`) fails whatever the record says. An exception that covers nothing fails as
-stale. `py-qa rule-doc pyqaci.suppression.unrecorded` lists every form.
+stale. `py-qa rule-doc pyqaci.suppression.unrecorded` lists every form, and `py-qa rule-doc`
+resolves each route's own identifier too (`py-qa rule-doc mypy::disallow_untyped_defs`). A
+record finding points at the line of its `[[exception]]`.
 
 Justifications are checked, not merely required: shorter than 40 characters, or fewer than six
 words of their own once stock phrases ("needed for now", "legacy", "TODO", "false positive" and
@@ -169,6 +175,13 @@ scan_exclude = []             # globs kept out of the suppression scan and the P
 pylint_plugins = []           # the project's own Pylint plugin modules
 pylint_enable = []            # Pylint's own messages the project adopts as defences
 formatter = "ruff"            # or "black", for a project formatted by Black (install it yourself)
+
+[tool.py-qa.lane_paths]       # paths of its own for fmt, ruff, mypy or pylint, in place of paths
+# mypy = ["src", "scripts"]   # a -p subset is narrowed to the lane's paths; listed by py-qa rules
+
+[tool.py-qa.test]
+# command = ["scripts/run_tests.sh"]  # the project's own test entry point, run without a shell,
+                                       # in place of pytest under coverage; it owns coverage
 
 [tool.py-qa.record]
 path = "qa/record.toml"

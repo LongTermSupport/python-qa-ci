@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 BUNDLED_DOCS = Path(__file__).parent / "docs" / "rules"
 DANGLING = "pyqaci.docs.dangling"
 REQUIRED_SECTIONS = ("## What it flags", "## Why", "## How to fix correctly")
-_PREFIX = re.compile(r"^(?:ruff|pylint|mypy|pyright|bandit|semgrep)::")
+_PREFIX = re.compile(r"^(?:ruff|pylint|mypy|pyright|bandit|semgrep|coverage)::")
 
 
 def missing_sections(page: str) -> list[str]:
@@ -40,7 +40,11 @@ def resolve(identifier: str, config: Config) -> str | None:
             page = directory / f"{candidate}.md"
             if page.is_file():
                 return page.read_text(encoding="utf-8")
-    return _pylint_doc(name, config) or _ruff_doc(name) or _mypy_doc(name)
+    if identifier.partition("::")[0] in {*_UNROUTED_TOOLS, "coverage"}:
+        # A Bandit B-code is not Ruff's flake8-bugbear code of the same number.
+        return _route_doc(identifier)
+    found = _pylint_doc(name, config) or _ruff_doc(name) or _mypy_doc(name)
+    return found or _route_doc(identifier)
 
 
 def _pylint_definitions(name: str, config: Config) -> list[tuple[str, str, str]]:
@@ -126,3 +130,82 @@ def check_docs(config: Config, defences: list[Defence]) -> list[Finding]:
                 )
             )
     return findings
+
+
+# What each configuration or comment route silences, for the identifiers the suppression lane
+# prints that name a setting rather than a rule.
+_ROUTES = {
+    "ruff::exclude": "A Ruff `exclude` or `extend-exclude` setting: files Ruff does not check.",
+    "mypy::exclude": "A mypy `exclude` setting: files mypy does not check.",
+    "mypy::follow_imports": "A mypy `follow_imports = skip` or `silent` setting: imported "
+    "modules mypy does not analyse, or analyses without reporting their errors.",
+    "mypy::ignore_errors": "A mypy `ignore_errors = true` setting: every error in the modules "
+    "it names is dropped.",
+    "coverage::no-cover": "A coverage.py `pragma: no cover` comment: the line, or the block it "
+    "opens, is left out of measurement.",
+    "coverage::no-branch": "A coverage.py `pragma: no branch` comment: a branch not taken there "
+    "is not reported as partial.",
+    "coverage::omit": "A coverage.py `omit` setting: files left out of measurement.",
+    "coverage::exclude_lines": "A coverage.py `exclude_lines` setting: lines matching its "
+    "patterns are left out of measurement.",
+    "coverage::exclude_also": "A coverage.py `exclude_also` setting: lines matching its patterns "
+    "are left out of measurement, beside the default ones.",
+    "coverage::partial_branches": "A coverage.py `partial_branches` setting: branches on lines "
+    "matching its patterns are not reported as partial.",
+}
+_UNROUTED_TOOLS = {"bandit": "Bandit", "semgrep": "Semgrep", "pyright": "Pyright"}
+
+
+def _route_doc(identifier: str) -> str | None:
+    """Return a page for an identifier that names a suppression route rather than a rule."""
+    tool, _, name = identifier.partition("::")
+    what = _ROUTES.get(identifier)
+    if what is None and tool == "mypy":
+        help_text = _mypy_option_help(name)
+        what = f"The mypy setting `{name}`: {help_text}." if help_text else None
+    if what is None and tool in _UNROUTED_TOOLS and name:
+        label = _UNROUTED_TOOLS[tool]
+        what = (
+            f"The {label} identifier `{name}`. {label} is not installed with py-qa and py-qa "
+            f"does not run it, so its documentation is not available offline; {label}'s own "
+            "documentation describes it."
+        )
+    if what is None:
+        return None
+    return (
+        f"# {identifier}\n\n{what}\n\nThis identifier names a suppression route, not a rule. "
+        "py-qa holds every use of it to the project record: a use without an exception for "
+        "this identifier and that file is reported as pyqaci.suppression.unrecorded "
+        "(`py-qa rule-doc pyqaci.suppression.unrecorded`).\n"
+    )
+
+
+def _mypy_option_help(name: str) -> str | None:
+    """Return mypy's own help for a setting, by its configuration or command-line name.
+
+    The help is read from mypy's printed usage, where each option starts a line and an
+    `(inverse: --flag)` note names the spelling that turns it the other way.
+    """
+    from mypy.main import define_options  # deferred: mypy is only needed for its own options
+
+    entries: dict[str, str] = {}
+    current: list[str] = []
+    text: list[str] = []
+    for line in define_options()[0].format_help().splitlines():
+        if match := re.match(r"^  (--[a-z][a-z-]*)(?:\s+\S.*)?$", line):
+            current, text = [match.group(1)], [line[2 + len(match.group(1)) :]]
+            entries[match.group(1)] = ""
+        elif current and line.startswith("    "):
+            text.append(line)
+        else:
+            current = []
+            continue
+        flat = " ".join(" ".join(text).split())
+        flat = re.sub(r"(\w)- (\w)", r"\1-\2", flat)
+        inverse = re.search(r"\(inverse: (--[a-z-]+)\)", flat)
+        described = re.sub(r"\s*\(inverse: [^)]*\)", "", flat).strip()
+        entries[current[0]] = described
+        if inverse:
+            entries[inverse.group(1)] = f"the inverse of `{current[0]}`, which is: {described}"
+    flag = "--" + name.replace("_", "-")
+    return entries.get(flag) or None

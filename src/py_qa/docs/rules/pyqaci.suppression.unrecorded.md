@@ -18,14 +18,28 @@ docstrings is never mistaken for a directive. It recognises:
 | Pyright | `pyright: ignore[<rules>]`, `pyright: basic`, `pyright: report<Rule>=false` (or `none`, `information`, `warning`)                                                                                 |
 | Bandit  | `nosec <codes>`                                                                                                                                                                                   |
 | Semgrep | `nosemgrep: <rule ids>`                                                                                                                                                                           |
+| coverage.py | `pragma: no cover` (as `no-cover`) and `pragma: no branch` (as `no-branch`), in any case and spacing coverage.py accepts |
 
 It also reads the configuration Ruff and mypy load: `ignore`, `extend-ignore`,
 `per-file-ignores`, `extend-per-file-ignores`, `exclude` and `extend-exclude` under `[tool.ruff]`,
-`[tool.ruff.lint]`, `ruff.toml` and `.ruff.toml`; and `disable_error_code`, `ignore_errors`,
+`[tool.ruff.lint]`, `ruff.toml` and `.ruff.toml`; `disable_error_code`, `ignore_errors`,
 `ignore_missing_imports`, `exclude` and `follow_imports = skip|silent` in `[tool.mypy]`, its
-overrides, `mypy.ini`, `.mypy.ini` and the `[mypy]` sections of `setup.cfg`. A setting is
-reported at the configuration file, with the identifier `<tool>::<code>` (`ruff::E501`,
-`mypy::ignore_errors`, `ruff::exclude`).
+overrides, `mypy.ini`, `.mypy.ini` and the `[mypy]` sections of `setup.cfg`; and the
+coverage.py settings that take code out of measurement, `omit`, `exclude_lines`,
+`exclude_also` and `partial_branches`, in `[tool.coverage.run]` and `[tool.coverage.report]`,
+`.coveragerc`, and the `[coverage:run]` and `[coverage:report]` sections of `setup.cfg` and
+`tox.ini`.
+
+A mypy strictness flag turned off is a suppression too: a flag `strict` sets (as the installed
+mypy defines it), a `warn_`, `disallow_` or `strict_` flag, `check_untyped_defs`,
+`extra_checks` or `local_partial_types` set to its loose value where `strict` or the global
+section had it on (`disallow_untyped_defs = false` in an override for `tests.*`), and
+`allow_untyped_globals`, `allow_redefinition`, `allow_empty_bodies` or `implicit_optional`
+switched on. A flag left at mypy's default is not one.
+
+A setting is reported at its line in the configuration file, with the identifier
+`<tool>::<setting or code>` (`ruff::E501`, `mypy::ignore_errors`, `ruff::exclude`,
+`mypy::disallow_untyped_defs`, `coverage::exclude_lines`).
 
 ## Why
 

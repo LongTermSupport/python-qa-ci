@@ -20,7 +20,7 @@ from py_qa.docs import check_docs, resolve
 from py_qa.pipeline import LANES, METHOD_LINE, UsageError, run_pipeline, suppression_findings
 from py_qa.record import RecordEntry, check_record, load_record
 from py_qa.summary import check_summary, write_summary
-from py_qa.tools import lane_commands, pylint_commands, pylint_messages
+from py_qa.tools import lane_tool, pylint_commands, pylint_messages, ruff_check_command
 
 if TYPE_CHECKING:
     from py_qa.config import Config
@@ -146,6 +146,8 @@ def _rules(config: Config, *, as_json: bool) -> int:
                 for entry in entries
             ],
             "scan_exclude": list(config.scan_exclude),
+            "paths": list(config.paths),
+            "lane_paths": {lane: list(paths) for lane, paths in config.lane_paths.items()},
         }
         sys.stdout.write(json.dumps(data, indent=2) + "\n")
         return 0
@@ -161,6 +163,13 @@ def _rules(config: Config, *, as_json: bool) -> int:
     if config.scan_exclude:
         sys.stdout.write("\nExcluded from the suppression scan and the bundled Pylint pass:\n")
         sys.stdout.writelines(f"  {pattern}\n" for pattern in config.scan_exclude)
+    if config.lane_paths:
+        sys.stdout.write(
+            f"\nLanes given paths of their own, in place of paths ({', '.join(config.paths)}):\n"
+        )
+        sys.stdout.writelines(
+            f"  {lane}: {', '.join(paths)}\n" for lane, paths in config.lane_paths.items()
+        )
     return 0
 
 
@@ -202,7 +211,7 @@ def _rule(config: Config, identifier: str, paths: tuple[str, ...]) -> int:
         fatal_or_usage = 1 | 32
         return 0 if code == 0 else 2 if code & fatal_or_usage else 1
     if re.fullmatch(r"[A-Z]+[0-9]+", name) and resolve(name, config) is not None:
-        ruff = lane_commands(config, paths=paths, no_fix=True)["ruff"][0]
+        ruff = ruff_check_command(config, paths)
         command = [*ruff[:6], f"--select={name}", *ruff[6:]]
         return subprocess.run(command, cwd=config.root, check=False).returncode
     msg = (
@@ -240,11 +249,9 @@ def _summary(config: Config, *, check: bool) -> int:
 
 
 def _tools(config: Config) -> int:
-    commands = lane_commands(config, paths=None, no_fix=True)
     for lane in LANES:
         state = "on" if config.tools[lane] else "off"
         if lane == "summary" and config.summary_file is None:
             state = "off (no summary file)"
-        what = " ".join(commands[lane][0][2:4]) if commands.get(lane) else "py-qa"
-        sys.stdout.write(f"{lane:12} {state:22} {what}\n")
+        sys.stdout.write(f"{lane:12} {state:22} {lane_tool(config, lane)}\n")
     return 0

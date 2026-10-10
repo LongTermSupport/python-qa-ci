@@ -19,7 +19,7 @@ BUDGET = "pyqaci.record.budget"
 EXPIRED = "pyqaci.record.expired"
 STALE = "pyqaci.record.stale"
 
-TOOL_PREFIXES = ("ruff", "pylint", "mypy", "pyright", "bandit", "semgrep")
+TOOL_PREFIXES = ("ruff", "pylint", "mypy", "pyright", "bandit", "semgrep", "coverage")
 _RULE = re.compile(r"^(?:" + "|".join(TOOL_PREFIXES) + r")::[A-Za-z0-9_.\-]+$")
 _FIELDS = ("rule", "path", "justification", "decided_by", "decided_on", "review_by")
 _MIN_CHARACTERS = 40
@@ -75,6 +75,8 @@ class RecordEntry:
     decided_by: str
     decided_on: date
     review_by: date
+    line: int = 0
+    """The line of the entry's [[exception]] header in the record, for findings to point at."""
 
 
 def is_generic(justification: str) -> bool:
@@ -109,7 +111,9 @@ def load_record(
         return [], [*findings, Finding(display, 0, INVALID, "exception must be [[exception]]")]
     entries: list[RecordEntry] = []
     seen: dict[str, int] = {}
+    headers = _header_lines(path.read_text(encoding="utf-8"))
     for number, raw in enumerate(raw_entries, start=1):
+        line = headers[number - 1] if number <= len(headers) else 0
         problems = _problems(raw, today, max_review_days)
         if not problems:
             justification = str(raw["justification"]).strip()
@@ -118,7 +122,7 @@ def load_record(
                 problems = [f"has the same justification as exception #{first}; say why this one"]
         label = _label(number, raw)
         if problems:
-            findings.extend(Finding(display, 0, INVALID, f"{label}: {p}") for p in problems)
+            findings.extend(Finding(display, line, INVALID, f"{label}: {p}") for p in problems)
             continue
         entries.append(
             RecordEntry(
@@ -129,9 +133,16 @@ def load_record(
                 str(raw["decided_by"]).strip(),
                 raw["decided_on"],
                 raw["review_by"],
+                line,
             )
         )
     return entries, findings
+
+
+def _header_lines(text: str) -> list[int]:
+    """Return the line of each [[exception]] header, in order; tomllib reports no positions."""
+    header = re.compile(r"^\s*\[\[\s*exception\s*\]\]")
+    return [number for number, line in enumerate(text.splitlines(), 1) if header.match(line)]
 
 
 def check_record(
@@ -163,7 +174,7 @@ def check_record(
     findings.extend(
         Finding(
             display,
-            0,
+            entry.line,
             EXPIRED,
             f"exception #{entry.number} ({entry.rule}, {entry.path}): review_by "
             f"{entry.review_by.isoformat()} has passed; re-decide it or remove it",

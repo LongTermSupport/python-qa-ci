@@ -61,3 +61,10 @@ def test_every_builtin_names_its_lane_and_summary() -> None:
         assert identifier.startswith("pyqaci.")
         assert lane
         assert summary.endswith(".")
+
+
+def test_a_project_test_command_owns_coverage(tmp_path: Path) -> None:
+    setup(tmp_path, '[tool.py-qa.test]\ncommand = ["make", "test"]\n')
+    identifiers = {d.identifier for d in active_defences(load_config(tmp_path))}
+    assert "pyqaci.tests" in identifiers
+    assert "pyqaci.coverage" not in identifiers

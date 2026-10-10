@@ -1,6 +1,6 @@
 [project]
 name = "py-qa-ci"
-version = "0.2.0"
+version = "0.3.0"
 description = "One QA entry point for Python projects, built for the Defence Before Fix method"
 readme = "README.md"
 license = "MIT"
@@ -53,7 +53,6 @@ detector = "1.0.0"
 known-gaps = [
     "TOOLING-SPEC 4.1: Ruff and mypy run off-the-shelf rules through the py-qa wrapper; neither can host a bespoke rule, so no defence is routed through them, but their findings block as checks.",
     "TOOLING-SPEC 4.2: mypy error codes resolve offline only to the one-line description mypy ships in mypy.errorcodes; mypy has no fuller offline documentation.",
-    "TOOLING-SPEC 4.3: a mypy configuration that turns a strictness flag off, such as disallow_untyped_defs = false in an override, is not yet held to the project record.",
 ]
 
 [tool.defence-before-fix.project]
