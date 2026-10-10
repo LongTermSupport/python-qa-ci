@@ -92,3 +92,31 @@ def test_check_docs_reports_project_rules_without_a_page(root: Path) -> None:
         "docs/defences/proj-half.md: pyqaci.docs.dangling proj-half's page lacks: "
         "## Why, ## How to fix correctly",
     ]
+
+
+@pytest.mark.parametrize(
+    ("identifier", "fragments"),
+    [
+        (
+            "mypy::disallow_untyped_defs",
+            ("# mypy::disallow_untyped_defs", "Disallow defining functions without type"),
+        ),
+        ("mypy::ignore_missing_imports", ("Silently ignore imports of missing modules",)),
+        ("bandit::B404", ("# bandit::B404", "Bandit", "not installed with py-qa")),
+        ("coverage::no-cover", ("# coverage::no-cover", "coverage.py", "pragma: no cover")),
+        ("ruff::exclude", ("# ruff::exclude", "files Ruff does not check")),
+        ("semgrep::python.lang.rule", ("# semgrep::python.lang.rule", "Semgrep")),
+    ],
+)
+def test_a_suppression_route_identifier_resolves(
+    root: Path, identifier: str, fragments: tuple[str, ...]
+) -> None:
+    text = resolve(identifier, load_config(root))
+    assert text is not None
+    for fragment in fragments:
+        assert fragment in text
+    assert "pyqaci.suppression.unrecorded" in text
+
+
+def test_an_unknown_route_of_a_known_tool_does_not_resolve(root: Path) -> None:
+    assert resolve("mypy::no_such_flag", load_config(root)) is None
