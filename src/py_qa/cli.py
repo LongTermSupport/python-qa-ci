@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from py_qa import __version__
-from py_qa.affected import select_tests
+from py_qa.affected import SelectorError, select_tests, with_selector
 from py_qa.config import ConfigError, load_config
 from py_qa.defences import BUILTIN, active_defences
 from py_qa.diff import DiffError, changed_files, resolve_base
@@ -92,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = load_config(Path.cwd())
         return _dispatch(args, config)
-    except (ConfigError, UsageError, DiffError, ValueError) as error:
+    except (ConfigError, UsageError, DiffError, SelectorError, ValueError) as error:
         sys.stderr.write(f"py-qa: error: {error}\n")
         return 2
     except LockHeldError as error:
@@ -153,7 +153,7 @@ def _run(args: argparse.Namespace, config: Config) -> int:
 def _affected(config: Config, base: str | None, *, as_json: bool) -> int:
     """Print the tests a diff run would run, each with the changed files that reach it."""
     change = _change(config, base)
-    selection = select_tests(config, change)
+    selection = with_selector(config, change, select_tests(config, change))
     if as_json:
         data = {
             "base": change.base,

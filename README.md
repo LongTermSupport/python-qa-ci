@@ -128,7 +128,10 @@ of `origin/main`, `origin/master`, `main` and `master` that exists. Each lane na
 The tests a change can affect come from a graph of the project's files. Every Python file is
 parsed for its imports, absolute and relative, and for strings that name a project module (a
 `mock.patch` target, an `importlib.import_module` argument) or a project file (by its path, a path
-suffix, or a file name no other file shares). A test is selected when a changed file is
+suffix, or a file name no other file shares). A string with spaces in it, a message or an
+embedded script, is read word by word, and a file it names counts only for a test that names it:
+a module that mentions a file in an error message is not a way through to every importer of the
+module. Docstrings are prose and count for nothing. A test is selected when a changed file is
 reachable from it. Importing a submodule runs its packages' `__init__`, and a test runs every
 `conftest.py` above it: a change to that `__init__` or conftest reaches every file that loads it,
 but what it imports reaches only the files that import that themselves, which keeps one
@@ -150,7 +153,16 @@ glob = "docs/**/*.md"                            # files a test reads by glob or
 exclude = ["docs/archive/**"]
 tests = ["tests/test_docs.py"]                   # [] declares that no test reads them
 why = "test_docs reads every page under docs/"
+
+[tool.py-qa.diff.selector]                       # a selector of the project's own, if it has one
+command = ["{python}", "scripts/select_tests.py", "--range", "{range}"]  # {range} is merge-base..HEAD
+tests_key = "selected"                           # the JSON key listing the tests it selects
+unmapped_key = "unmapped"                        # the key listing files it cannot map, if any
 ```
+
+A project that already selects tests for a change keeps its selector: its tests join the graph's,
+and a file it cannot map counts as unmapped. It prints JSON on standard output and exits 0; a
+failure, or output without the keys, fails the test lane.
 
 A change to a `full_tests_on` file runs the whole test lane. A changed file that is not Python,
 that no test reaches and that no map entry matches is unmapped: with `unmapped = "full"`, the

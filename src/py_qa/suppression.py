@@ -508,8 +508,23 @@ def scope_files(root: Path, scan_exclude: tuple[str, ...], paths: tuple[str, ...
     ]
 
 
+@functools.cache
+def in_git_work_tree(root: Path) -> bool:
+    """Return True when root is inside a git work tree, at its top or in a directory below it."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return False
+    return result.returncode == 0 and result.stdout.strip() == "true"
+
+
 def _git_files(root: Path) -> list[str] | None:
-    if not (root / ".git").exists():
+    if not in_git_work_tree(root):
         return None
     result = subprocess.run(
         [

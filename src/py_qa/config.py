@@ -62,9 +62,10 @@ _CHECK_NAME = re.compile(r"[a-z][a-z0-9_-]*\Z")
 # The placeholders a command may hold as a whole argument, and where each one is allowed.
 _TOKENS = {
     "check command": {"{python}"},
-    "check diff_command": {"{python}", "{files}", "{base}"},
+    "check diff_command": {"{python}", "{files}", "{base}", "{merge_base}", "{range}"},
     "test command": {"{python}"},
-    "test diff_command": {"{python}", "{tests}", "{base}"},
+    "test diff_command": {"{python}", "{tests}", "{base}", "{merge_base}", "{range}"},
+    "diff selector": {"{python}", "{base}", "{merge_base}", "{range}"},
     "test setup": {"{python}"},
     "rule_doc_command": {"{python}", "{identifier}"},
 }
@@ -128,6 +129,15 @@ class DiffMapEntry:
 
 
 @dataclass(frozen=True)
+class DiffSelector:
+    """A project command that names more tests for a change, as JSON, beside py-qa's graph."""
+
+    command: tuple[str, ...]
+    tests_key: str
+    unmapped_key: str | None = None
+
+
+@dataclass(frozen=True)
 class DiffPolicy:
     """How a diff run (`py-qa run --diff`) finds what changed and what it must test."""
 
@@ -135,6 +145,7 @@ class DiffPolicy:
     full_tests_on: tuple[str, ...] = DEFAULT_FULL_TESTS_ON
     unmapped: str = "full"
     map: tuple[DiffMapEntry, ...] = ()
+    selector: DiffSelector | None = None
 
 
 @dataclass(frozen=True)
@@ -358,10 +369,25 @@ def _verdict(entry: dict[str, Any], where: str, name: str = "verdict") -> Verdic
     return file, tuple(part for part in key.split(".") if part)
 
 
+def _selector(diff: dict[str, Any]) -> DiffSelector | None:
+    where = "[tool.py-qa.diff.selector]"
+    raw = diff.get("selector")
+    if raw is None:
+        return None
+    selector = _table(raw, where)
+    _reject_unknown(selector, {"command", "tests_key", "unmapped_key"}, where)
+    command = _argv(selector.get("command"), "command", where, "diff selector", None)
+    tests_key = _string(selector, "tests_key", where)
+    if not tests_key:
+        msg = f"{where}: tests_key, the JSON key listing the tests it selects, is required"
+        raise ConfigError(msg)
+    return DiffSelector(command, tests_key, _string(selector, "unmapped_key", where))
+
+
 def _diff_policy(table: dict[str, Any]) -> DiffPolicy:
     where = "[tool.py-qa.diff]"
     diff = _table(table.get("diff", {}), where)
-    _reject_unknown(diff, {"base", "full_tests_on", "unmapped", "map"}, where)
+    _reject_unknown(diff, {"base", "full_tests_on", "unmapped", "map", "selector"}, where)
     unmapped = _string(diff, "unmapped", where) or "full"
     if unmapped not in UNMAPPED_POLICIES:
         msg = f"{where}: unmapped must be one of {', '.join(UNMAPPED_POLICIES)}"
@@ -390,6 +416,7 @@ def _diff_policy(table: dict[str, Any]) -> DiffPolicy:
         full_tests_on=DEFAULT_FULL_TESTS_ON if full is None else full,
         unmapped=unmapped,
         map=tuple(entries),
+        selector=_selector(diff),
     )
 
 

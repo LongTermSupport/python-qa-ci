@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from py_qa import __version__
-from py_qa.affected import Selection, select_tests
+from py_qa.affected import Selection, SelectorError, select_tests, with_selector
 from py_qa.defences import Defence, active_defences
 from py_qa.docs import check_docs
 from py_qa.finding import Finding
@@ -374,6 +374,8 @@ def _project_check(state: _Run, check: ProjectCheck) -> tuple[str, str]:
             present = set(change.files)
             tokens["{files}"] = [name for name in watched if name in present]
             tokens["{base}"] = [change.base]
+            tokens["{merge_base}"] = [change.merge_base]
+            tokens["{range}"] = [f"{change.merge_base}..HEAD"]
             command = check.diff_command
     passed = _checked(
         state, check.name, check.verdict, lambda: state.step(expand(command, tokens)) == 0
@@ -441,7 +443,11 @@ def _test_lane(state: _Run) -> tuple[str, str]:
 
     if state.change is None:
         return ("PASS" if whole() else "FAIL"), ""
-    selection = select_tests(config, state.change)
+    try:
+        selection = with_selector(config, state.change, select_tests(config, state.change))
+    except SelectorError as error:
+        out.write(f"py-qa: test failed: {error}\n")
+        return "FAIL", "the diff selector failed"
     state.selection = selection
     _describe_selection(selection, out)
     if selection.missing:
@@ -453,7 +459,13 @@ def _test_lane(state: _Run) -> tuple[str, str]:
         out.write("py-qa: test: no test can be affected by the change\n")
         return "PASS", "no affected test"
     note = f"{len(selection.tests)} affected test files"
-    tokens = {**python, "{tests}": list(selection.tests), "{base}": [state.change.base]}
+    tokens = {
+        **python,
+        "{tests}": list(selection.tests),
+        "{base}": [state.change.base],
+        "{merge_base}": [state.change.merge_base],
+        "{range}": [f"{state.change.merge_base}..HEAD"],
+    }
     if config.test_diff_command is not None:
         narrowed = [expand(config.test_diff_command, tokens)]
         ok = _checked(

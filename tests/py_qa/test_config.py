@@ -307,3 +307,31 @@ def test_rejects_bad_test_lock_and_rule_doc(tmp_path: Path, text: str, fragment:
     write(tmp_path, text)
     with pytest.raises(ConfigError, match=re.escape(fragment)):
         load_config(tmp_path)
+
+
+def test_a_diff_selector(tmp_path: Path) -> None:
+    write(
+        tmp_path,
+        '[tool.py-qa.diff.selector]\ncommand = ["{python}", "map.py", "{range}"]\n'
+        'tests_key = "selected"\nunmapped_key = "unmapped"\n',
+    )
+    selector = load_config(tmp_path).diff.selector
+    assert selector is not None
+    assert selector.command == ("{python}", "map.py", "{range}")
+    assert selector.tests_key == "selected"
+    assert selector.unmapped_key == "unmapped"
+
+
+@pytest.mark.parametrize(
+    ("text", "fragment"),
+    [
+        ('[tool.py-qa.diff.selector]\ncommand = ["x"]\n', "tests_key"),
+        ('[tool.py-qa.diff.selector]\ntests_key = "t"\n', "command must be"),
+        ('[tool.py-qa.diff.selector]\ncommand = ["x", "{tests}"]\ntests_key = "t"\n', "{tests}"),
+        ('[tool.py-qa.diff.selector]\ncommand = ["x"]\ntests_key = "t"\nother = 1\n', "unknown"),
+    ],
+)
+def test_rejects_a_bad_diff_selector(tmp_path: Path, text: str, fragment: str) -> None:
+    write(tmp_path, text)
+    with pytest.raises(ConfigError, match=re.escape(fragment)):
+        load_config(tmp_path)

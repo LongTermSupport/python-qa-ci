@@ -21,7 +21,9 @@ change in seconds rather than an hour.
   check when a file it watches changed (`paths`, `diff_command`, `diff = false`), and the test
   lane on the tests the change can affect, read from an import and file-reference graph. What
   the graph cannot see is declared in `[tool.py-qa.diff]` (`full_tests_on`, `unmapped`, and
-  `[[tool.py-qa.diff.map]]`). `py-qa affected` prints the selection and why each test is in it.
+  `[[tool.py-qa.diff.map]]`), and `[tool.py-qa.diff.selector]` adds a project's own selector's
+  tests. py-qa's own inputs (the record, the `docs_dir` pages, the summary file) need no test.
+  `py-qa affected` prints the selection and why each test is in it.
 - `[tool.py-qa.test] diff_command`, `setup`, `verdict` and `diff_verdict`.
 - `rule_doc_command`: a project command that documents identifiers nothing else does.
 - `--json <file>`: the outcome of every lane, and a diff run's selection, as JSON.
@@ -43,6 +45,8 @@ change in seconds rather than an hour.
   in `py-qa tools`.
 - A command that cannot be started now fails its lane with the shell's status, 127, and says so,
   in place of a traceback.
+- A project in a directory below its repository's top was scanned without git, so a file git
+  ignores was scanned too; git is now asked whether the directory is in a work tree.
 
 ## 0.3.0
 

@@ -7,7 +7,15 @@ from pathlib import Path
 import pytest
 
 from py_qa import __version__, affected
-from py_qa.affected import Selection, _cached_scan, scan_source, select_tests
+from py_qa.affected import (
+    Selection,
+    SelectorError,
+    _cached_scan,
+    capture,
+    scan_source,
+    select_tests,
+    with_selector,
+)
 from py_qa.config import load_config
 from py_qa.diff import Change
 
@@ -100,6 +108,21 @@ def test_files_named_by_path_or_unique_name_select_the_tests_that_name_them(
     assert select(root, "scripts/check_thing.py").tests == ("tests/test_script.py",)
 
 
+def test_a_file_named_in_a_message_counts_and_one_named_in_a_docstring_does_not(
+    tmp_path: Path,
+) -> None:
+    root = project(tmp_path)
+    write(
+        root,
+        {
+            "tests/test_message.py": 'MESSAGE = "fix it in `scripts/run.sh`, then rerun."\n',
+            "tests/test_docstring.py": '"""Mentions check_thing.py only in prose."""\n',
+        },
+    )
+    assert "tests/test_message.py" in select(root, "scripts/run.sh").tests
+    assert "tests/test_docstring.py" not in select(root, "scripts/check_thing.py").tests
+
+
 def test_an_unmapped_file_is_reported_and_runs_everything_by_default(tmp_path: Path) -> None:
     selection = select(project(tmp_path), "docs/guide.md")
     assert selection.unmapped == ("docs/guide.md",)
@@ -136,6 +159,14 @@ def test_a_map_entry_can_exclude_files_its_glob_matches(tmp_path: Path) -> None:
     selection = select(root, "docs/guide.md")
     assert selection.tests == ()
     assert selection.unmapped == ("docs/guide.md",)
+
+
+def test_the_files_py_qas_own_lanes_check_are_accounted_for(tmp_path: Path) -> None:
+    root = project(tmp_path, '[tool.py-qa.summary]\nfile = "AGENTS.md"\n')
+    write(root, {"qa/record.toml": "", "docs/defences/x.md": "", "AGENTS.md": ""})
+    selection = select(root, "qa/record.toml", "docs/defences/x.md", "AGENTS.md")
+    assert not selection.full
+    assert selection.unmapped == ()
 
 
 def test_a_map_naming_a_missing_test_is_reported(tmp_path: Path) -> None:
@@ -242,3 +273,63 @@ def test_scan_source_reads_imports_and_name_like_strings() -> None:
     assert imports == [("a.b", 0, ()), ("", 1, ("c",)), ("d", 1, ())]
     assert strings == ["pkg.mod", "a/b.sh"]
     assert scan_source("def (:\n") == ([], [])
+
+
+SELECTOR = """
+[tool.py-qa.diff.selector]
+command = ["{python}", "selector.py", "{base}", "{merge_base}", "{range}"]
+tests_key = "selected"
+unmapped_key = "unmapped"
+"""
+
+
+def test_the_projects_selector_widens_the_selection(tmp_path: Path) -> None:
+    root = project(tmp_path, SELECTOR)
+    write(
+        root,
+        {
+            "selector.py": (
+                "import json, sys\n"
+                "assert sys.argv[1:] == ['main', '0' * 40, '0' * 40 + '..HEAD'], sys.argv\n"
+                "print(json.dumps({'selected': ['tests/test_c.py'], 'unmapped': ['src/pkg/b.py']}))\n"
+            )
+        },
+    )
+    change = Change("main", "0" * 40, ("src/pkg/b.py",), ())
+    config = load_config(root)
+    selection = with_selector(config, change, select_tests(config, change))
+    assert selection.tests == ("tests/test_b.py", "tests/test_c.py")
+    assert selection.reached_by["tests/test_c.py"] == ("[tool.py-qa.diff.selector]",)
+    assert selection.unmapped == ("src/pkg/b.py",)
+    assert selection.full
+    assert selection.full_reasons == ("src/pkg/b.py: the diff selector cannot map it",)
+
+
+@pytest.mark.parametrize(
+    ("script", "message"),
+    [
+        ("import sys\nsys.exit(3)\n", "exited 3"),
+        ("print('not json')\n", "printed no JSON"),
+        ("print('{\"selected\": 3}')\n", "no list of strings under 'selected'"),
+    ],
+)
+def test_a_selector_that_fails_or_prints_nonsense_is_an_error(
+    tmp_path: Path, script: str, message: str
+) -> None:
+    root = project(tmp_path, SELECTOR)
+    write(root, {"selector.py": script})
+    change = Change("main", "0" * 40, ("src/pkg/b.py",), ())
+    config = load_config(root)
+    with pytest.raises(SelectorError, match=message):
+        with_selector(config, change, select_tests(config, change))
+
+
+def test_no_selector_leaves_the_selection_alone(tmp_path: Path) -> None:
+    config = load_config(project(tmp_path))
+    change = Change("main", "0" * 40, ("src/pkg/b.py",), ())
+    selection = select_tests(config, change)
+    assert with_selector(config, change, selection) is selection
+
+
+def test_a_selector_that_cannot_start_is_an_error(tmp_path: Path) -> None:
+    assert capture([str(tmp_path / "missing")], tmp_path)[0] == 127

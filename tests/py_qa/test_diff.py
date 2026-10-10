@@ -95,3 +95,17 @@ def test_resolve_base_without_any_candidate_is_an_error(tmp_path: Path) -> None:
 def test_outside_git_is_an_error(tmp_path: Path) -> None:
     with pytest.raises(DiffError, match="git"):
         changed_files(tmp_path, "main")
+
+
+def test_a_project_below_the_top_sees_its_own_changes_by_its_own_paths(tmp_path: Path) -> None:
+    root = repo(tmp_path)
+    (root / "sub").mkdir()
+    (root / "sub" / "a.py").write_text("x = 1\n", encoding="utf-8")
+    git(root, "add", ".")
+    git(root, "commit", "-q", "-m", "sub")
+    (root / "sub" / "a.py").write_text("x = 2\n", encoding="utf-8")
+    (root / "sub" / "b.py").write_text("y = 1\n", encoding="utf-8")
+    (root / "keep.py").write_text("x = 9\n", encoding="utf-8")
+    change = changed_files(root / "sub", "main")
+    assert change.files == ("a.py", "b.py")
+    assert change.deleted == ()

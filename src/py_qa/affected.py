@@ -29,7 +29,9 @@ import ast
 import fnmatch
 import json
 import os
+import re
 import subprocess
+import sys
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
@@ -37,17 +39,26 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from py_qa import __version__
-from py_qa.config import read_pyproject
+from py_qa.config import DiffMapEntry, read_pyproject
 from py_qa.globs import match_any, match_glob
-from py_qa.suppression import SKIPPED_DIRECTORIES
+from py_qa.suppression import SKIPPED_DIRECTORIES, in_git_work_tree
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from py_qa.config import Config
     from py_qa.diff import Change
 
 _DEFAULT_TEST_FILES = ("test_*.py", "*_test.py")
-# Longer strings are prose or data, not a name; skipping them keeps the scan linear.
-_MAX_NAME_LENGTH = 300
+# A string longer than this is data, not prose that might name a file.
+_MAX_STRING_LENGTH = 2000
+# A word in a string that could be a path or a file name.
+_PATH_WORD = re.compile(r"[\w./-]*[./][\w./-]*")
+# Bumped when what a scan records changes, so a cache written before is not read.
+_SCAN_FORMAT = 2
+# How one file reaches another, weakest first: named in prose; loaded implicitly, as a package's
+# __init__ or a conftest; imported or named outright.
+WEAK, IMPLICIT, EXPLICIT = range(3)
 # Below this many files to parse, starting worker processes costs more than it saves.
 PARALLEL_THRESHOLD = 64
 # A cache entry is [stamp, imports, strings]; an import is [module, level, names].
@@ -82,7 +93,14 @@ def scan_source(text: str) -> Scan:
         return [], []
     imports: list[Import] = []
     strings: list[str] = []
+    docstrings = {
+        id(node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+    }
     for node in ast.walk(tree):
+        if id(node) in docstrings:
+            continue
         if isinstance(node, ast.Import):
             imports.extend((alias.name, 0, ()) for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
@@ -98,7 +116,7 @@ def _name_like(node: ast.AST) -> str | None:
     if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
         return None
     value = node.value
-    if len(value) > _MAX_NAME_LENGTH or "\n" in value or not ("." in value or "/" in value):
+    if len(value) > _MAX_STRING_LENGTH or not ("." in value or "/" in value):
         return None
     return value
 
@@ -112,7 +130,7 @@ def _scan_file(path: str) -> Scan:
 
 def git_path(root: Path, name: str) -> Path | None:
     """Return a path inside the work tree's git directory, or None outside a git work tree."""
-    if not (root / ".git").exists():
+    if not in_git_work_tree(root):
         return None
     result = subprocess.run(
         ["git", "-C", str(root), "rev-parse", "--git-path", name],
@@ -121,6 +139,10 @@ def git_path(root: Path, name: str) -> Path | None:
         check=False,
     )
     return root / result.stdout.strip() if result.returncode == 0 else None
+
+
+def _cache_version() -> str:
+    return f"{__version__}/{_SCAN_FORMAT}"
 
 
 def _cached_scan(entry: object, stamp: list[int]) -> Scan | None:
@@ -153,7 +175,7 @@ class _ScanCache:
                 stored = json.loads(self.path.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, UnicodeDecodeError):
                 stored = None
-            if isinstance(stored, dict) and stored.get("version") == __version__:
+            if isinstance(stored, dict) and stored.get("version") == _cache_version():
                 files = stored.get("files")
                 self.entries = files if isinstance(files, dict) else {}
 
@@ -183,7 +205,7 @@ class _ScanCache:
                 for name, scan in found.items()
             }
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            payload = {"version": __version__, "files": files}
+            payload = {"version": _cache_version(), "files": files}
             self.path.write_text(json.dumps(payload), encoding="utf-8")
         return found
 
@@ -269,44 +291,53 @@ class _Graph:
             directory = directory.parent
         return parts
 
-    def resolve_module(self, dotted: str, found: dict[str, bool]) -> None:
+    def resolve_module(self, dotted: str, found: dict[str, int]) -> None:
         """Add the files importing dotted runs: the module itself, and its packages implicitly."""
         parts = dotted.split(".")
         for end in range(1, len(parts) + 1):
-            explicit = end == len(parts)
+            kind = EXPLICIT if end == len(parts) else IMPLICIT
             for name in self.modules.get(".".join(parts[:end]), ()):
-                found[name] = found.get(name, False) or explicit
+                _merge(found, name, kind)
 
-    def resolve_string(self, text: str, found: dict[str, bool]) -> None:
-        """Add the project files a string names: as a module, a path, or a unique file name."""
-        if "/" not in text and " " not in text:
+    def resolve_string(self, text: str, found: dict[str, int]) -> None:
+        """Add the project files a string names: as a module, a path, or a unique file name.
+
+        A string holding spaces or lines, such as a message or an embedded script, is read word
+        by word for paths and file names, and what it names is reached weakly: a test that names
+        a file in a message is selected for it, but a module that does is not a way through.
+        """
+        if not any(character.isspace() for character in text):
             parts = text.split(".")
             for end in range(len(parts), 1, -1):
                 if ".".join(parts[:end]) in self.modules:
                     self.resolve_module(".".join(parts[:end]), found)
                     break
-        path = text.removeprefix("./").rstrip("/")
-        targets: set[str] = set()
+            words, kind = [text], EXPLICIT
+        else:
+            words, kind = _PATH_WORD.findall(text), WEAK
+        for word in words:
+            for name in self._resolve_path(word.removeprefix("./").rstrip("/.")):
+                _merge(found, name, kind)
+
+    def _resolve_path(self, path: str) -> set[str]:
         if "/" in path:
             pieces = path.split("/")
             for start in range(len(pieces) - 1):
                 candidate = "/".join(pieces[start:])
                 if candidate in self.files:
-                    targets = {candidate}
-                    break
+                    return {candidate}
                 if candidate in self.by_suffix:
-                    targets = self.by_suffix[candidate]
-                    break
-        elif "." in path and len(self.by_name.get(path, ())) == 1:
-            targets = self.by_name[path]
-        for name in targets:
-            found[name] = True
+                    return self.by_suffix[candidate]
+            return set()
+        if "." in path and len(self.by_name.get(path, ())) == 1:
+            return self.by_name[path]
+        return set()
 
-    def references(self, name: str, scan: Scan) -> dict[str, bool]:
+    def references(self, name: str, scan: Scan) -> dict[str, int]:
         """Return the project files one Python file reaches, each marked explicit or implicit."""
         imports, strings = scan
         package = self.packages.get(name, [])
-        found: dict[str, bool] = {}
+        found: dict[str, int] = {}
         for module, level, names in imports:
             if level:
                 keep = len(package) - (level - 1)
@@ -323,6 +354,10 @@ class _Graph:
             self.resolve_string(text, found)
         found.pop(name, None)
         return found
+
+
+def _merge(found: dict[str, int], name: str, kind: int) -> None:
+    found[name] = max(found.get(name, WEAK), kind)
 
 
 def _is_test(name: str, patterns: tuple[str, ...], testpaths: tuple[str, ...]) -> bool:
@@ -351,6 +386,7 @@ class Referrers:
 
     explicit: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
     implicit: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
+    weak: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
 
     def reach(self, start: str) -> set[str]:
         """Return every file from which start is reachable.
@@ -384,10 +420,20 @@ def build_referrers(config: Config, deleted: tuple[str, ...] = ()) -> tuple[Refe
         targets = graph.references(name, scans[name])
         if name in tests:
             for conftest in _conftests(name, graph.files):
-                targets.setdefault(conftest, False)
-        for target, explicit in targets.items():
-            (referrers.explicit if explicit else referrers.implicit)[target].add(name)
+                _merge(targets, conftest, IMPLICIT)
+        kinds = {EXPLICIT: referrers.explicit, IMPLICIT: referrers.implicit, WEAK: referrers.weak}
+        for target, kind in targets.items():
+            kinds[kind][target].add(name)
     return referrers, tests
+
+
+def _own_inputs(config: Config) -> tuple[DiffMapEntry, ...]:
+    """Return the files py-qa's own lanes check, which no test needs to read to be covered."""
+    why = "checked by py-qa's own lanes in every run"
+    globs = ["/" + config.record.path, "/" + config.docs_dir.rstrip("/") + "/**"]
+    if config.summary_file is not None:
+        globs.append("/" + config.summary_file)
+    return tuple(DiffMapEntry(glob, (), why) for glob in globs)
 
 
 def select_tests(config: Config, change: Change) -> Selection:
@@ -404,14 +450,16 @@ def select_tests(config: Config, change: Change) -> Selection:
             continue
         mapped = [
             entry
-            for entry in policy.map
+            for entry in (*policy.map, *_own_inputs(config))
             if match_glob(entry.glob, name) and not match_any(entry.exclude, name)
         ]
         for entry in mapped:
             for test in entry.tests:
                 reached_by[test].add(name)
         reached = referrers.reach(name)
-        reached_tests = {node for node in reached if node in tests}
+        reached_tests = {
+            node for node in reached | referrers.weak.get(name, set()) if node in tests
+        }
         if name in tests:
             reached_tests.add(name)
         for test in reached_tests:
@@ -436,3 +484,75 @@ def select_tests(config: Config, change: Change) -> Selection:
         untested=tuple(untested),
         missing=missing,
     )
+
+
+class SelectorError(Exception):
+    """The project's diff selector failed or printed something that is not its selection."""
+
+
+def capture(command: list[str], cwd: Path) -> tuple[int, str]:
+    """Run a command without a shell and return its exit status and its standard output."""
+    try:
+        result = subprocess.run(command, cwd=cwd, capture_output=True, text=True, check=False)
+    except OSError as error:
+        return 127, str(error)
+    return result.returncode, result.stdout
+
+
+def with_selector(
+    config: Config,
+    change: Change,
+    selection: Selection,
+    run: Callable[[list[str], Path], tuple[int, str]] = capture,
+) -> Selection:
+    """Return the selection widened by the project's own selector, when it has one.
+
+    The selector's tests join the graph's; a file it cannot map is unmapped, as one the graph
+    cannot reach is.
+    """
+    selector = config.diff.selector
+    if selector is None:
+        return selection
+    tokens = {
+        "{python}": sys.executable,
+        "{base}": change.base,
+        "{merge_base}": change.merge_base,
+        "{range}": f"{change.merge_base}..HEAD",
+    }
+    command = [tokens.get(argument, argument) for argument in selector.command]
+    code, output = run(command, config.root)
+    if code != 0:
+        msg = f"the diff selector exited {code}: {' '.join(command)}"
+        raise SelectorError(msg)
+    try:
+        data = json.loads(output)
+    except json.JSONDecodeError as error:
+        msg = f"the diff selector printed no JSON: {error}"
+        raise SelectorError(msg) from error
+    tests = _string_list(data, selector.tests_key)
+    unmapped = _string_list(data, selector.unmapped_key) if selector.unmapped_key else []
+    reached_by = {test: set(names) for test, names in selection.reached_by.items()}
+    for test in tests:
+        reached_by.setdefault(test, set()).add("[tool.py-qa.diff.selector]")
+    new_unmapped = [name for name in unmapped if name not in selection.unmapped]
+    reasons = list(selection.full_reasons)
+    if config.diff.unmapped == "full":
+        reasons.extend(f"{name}: the diff selector cannot map it" for name in new_unmapped)
+    root = config.root
+    return Selection(
+        full=bool(reasons),
+        full_reasons=tuple(reasons),
+        tests=tuple(sorted(test for test in reached_by if (root / test.split("::")[0]).exists())),
+        reached_by={test: tuple(sorted(names)) for test, names in sorted(reached_by.items())},
+        unmapped=(*selection.unmapped, *new_unmapped),
+        untested=selection.untested,
+        missing=selection.missing,
+    )
+
+
+def _string_list(data: object, key: str) -> list[str]:
+    value = data.get(key) if isinstance(data, dict) else None
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        msg = f"the diff selector's JSON has no list of strings under {key!r}"
+        raise SelectorError(msg)
+    return value

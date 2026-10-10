@@ -77,7 +77,11 @@ def changed_files(root: Path, base: str) -> Change:
         msg = f"{base} and HEAD have no merge base"
         raise DiffError(msg)
     merge_base = merged.stdout.strip()
-    status = _git(root, "diff", "--name-status", "-z", "--no-renames", merge_base, "--")
+    # --relative: a project in a directory below the repository's top sees its own files, by
+    # paths relative to itself, as every lane names them.
+    status = _git(
+        root, "diff", "--name-status", "-z", "--no-renames", "--relative", merge_base, "--"
+    )
     untracked = _git(root, "ls-files", "-z", "--others", "--exclude-standard")
     for result in (status, untracked):
         if result.returncode != 0:
